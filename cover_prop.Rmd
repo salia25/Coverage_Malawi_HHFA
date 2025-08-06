@@ -1,0 +1,348 @@
+---
+title: "coverage_analysis"
+output: html_document
+date: "2024-10-23"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(sf)
+library(raster)
+library(dplyr)
+library(tidyr)  # For replace_na function
+library(stringi)
+
+library(purrr)
+```
+
+```{r}
+setwd("C:/Users/sally/OneDrive/Desktop/uw academic/Thesis/malawi Survey/Indicators")
+```
+
+```{r}
+readiness<-read.csv("input file/data_readiness_2 mini.csv")
+unique(readiness$SR)
+
+# Overwrite readiness$SR with the new binary values
+readiness$SR <- ifelse(is.na(readiness$SR), NA, ifelse(readiness$SR == TRUE, 1, 0))
+
+# Replace non-standard spaces in the columns
+readiness <- readiness %>%
+  mutate(across(c(Intervention, L2, L3, L4), ~ stri_replace_all_regex(., "\\s+", " ")))
+
+
+
+# Now, re-run the concatenation logic
+readiness <- readiness %>%
+  mutate(
+    L2 = replace_na(L2, ""),
+    L3 = replace_na(L3, ""),
+    L4 = replace_na(L4, "")
+  ) %>%
+  # Create the new 'intervention_component' column by merging 'Intervention', 'L2', 'L3', 'L4'
+  mutate(intervention_component = paste(Intervention, L2, L3, L4, sep = " - ")) %>%
+  # Remove any extra separators
+  mutate(intervention_component = gsub(" - $", "", intervention_component)) %>%
+  mutate(intervention_component = gsub(" -  - ", " - ", intervention_component))
+
+# Check the new column
+View(readiness)
+dim(readiness)
+
+output_path <- "C:/Users/sally/OneDrive/Desktop/uw academic/Thesis/malawi Survey/coverage maps/readiness_HC.csv"
+
+# Write the file
+write.csv(readiness, file = output_path, row.names = FALSE)
+  
+```
+
+```{r}
+unique_interventions <- unique(readiness$Intervention)
+print(unique_interventions)
+
+
+# Loop through unique interventions and create a subset for each
+for (intervention in unique_interventions) {
+  # Create a new data frame for each intervention
+  subset_data <- readiness %>% filter(Intervention == intervention)
+  
+  # Assign a name to each subset dynamically, e.g., readiness_HIV
+  assign(paste0("readiness_", gsub(" ", "_", intervention)), subset_data)
+}
+
+# Example of how to access one of the new data frames:
+# print(readiness_HIV)
+
+
+
+
+dim(readiness_Antenatal_care)
+
+
+
+
+
+# Select unique rows based on intervention_component
+ID <- readiness %>%
+  distinct(intervention_component, .keep_all = TRUE) %>%
+  dplyr::select(Service_id, Group, Subgroup, Intervention.class, 
+         Intervention, L2, L3, L4, no.information, Notes, 
+         IA.sum, IA.max, intervention_component) 
+
+# Confirm dimensions
+dim(ID) # Should output 175 rows and 13 columns
+
+
+```
+
+
+
+
+```{r}
+
+# Step 1: Load population raster
+population_raster <- raster("popuation raster/MWI_pph_2020_adj_v2.tif")
+
+
+
+
+
+# Calculate the total population across the entire raster (all cells)
+total_population <- cellStats(population_raster, stat = "sum", na.rm = TRUE)
+
+# Print the total population
+print(total_population)
+
+```
+
+
+```{r}
+f_coverage_PHC<-read.csv("population by facaility/csv_Healthcentre&RuralCommunityHospital Readiness.csv")
+f_coverage_CH<-read.csv("population by facaility/csv_Central Hospital Readiness.csv")
+f_coverage_DH<-read.csv("population by facaility/csv_District Hospital Readiness.csv")
+
+f_coverage_all <- bind_rows(f_coverage_PHC, f_coverage_CH, f_coverage_DH)
+
+# Check the result
+dim(f_coverage_all)
+head(merged_coverage)
+
+```
+
+#dislove population
+
+```{r}
+
+# Step 2: Create SF object for PHCs with coordinates
+f_coverage_PHC_sf <- st_as_sf(f_coverage_PHC, coords = c("A109__Long", "A109__Lati"), crs = 4326)
+
+# Step 3: Create 5 km buffer around PHCs
+PHC_buffer <- st_buffer(f_coverage_PHC_sf, dist = 5000)
+
+# Step 4: Convert PHC buffer to SpatialPolygons for use with raster data
+PHC_buffer_sp <- as(PHC_buffer, "Spatial")
+
+# Step 5: Ensure CRS matches between raster and PHC buffer
+if (!identical(crs(population_raster), crs(PHC_buffer_sp))) {
+    PHC_buffer_sp <- spTransform(PHC_buffer_sp, crs(population_raster))
+}
+
+# Step 6: Extract the population within the PHC buffer (avoiding double-counting)
+population_within_phc_buffer <- raster::extract(population_raster, PHC_buffer_sp, fun = sum, na.rm = TRUE)
+
+# Step 7: Add the population data to the corresponding PHCs
+f_coverage_PHC_sf$population_covered <- population_within_phc_buffer
+
+f_coverage_PHC_sf <- f_coverage_PHC_sf %>%
+    mutate(Fname = trimws(tolower(Fname)))  # Trim whitespace and convert to lowercase
+
+write.csv(f_coverage_PHC_sf,"f_coverage_PHC_sf.csv", row.names=TRUE)
+```
+
+#ANC example
+
+```{r}
+readiness_Antenatal_care <- readiness_Antenatal_care %>%
+    mutate(Fname = trimws(tolower(Fname)))  # Do the same for readiness data
+
+# Step 8: Now, merge this population data with the readiness_Antenatal_care by facility name
+readiness_Antenatal_care <- readiness_Antenatal_care %>%
+    left_join(f_coverage_PHC_sf %>% select(Fname, population_covered), by = "Fname")
+
+
+```
+
+```{r}
+
+
+readiness_Antenatal_care <- readiness_Antenatal_care %>%
+  mutate(PAC = population_covered * SR)
+
+
+# Step 1: Replace NA in population_covered with 0
+readiness_Antenatal_care <- readiness_Antenatal_care %>%
+  mutate(population_covered = ifelse(is.na(population_covered), 0, population_covered)) 
+
+# Step 2: Calculate PAC
+readiness_Antenatal_care <- readiness_Antenatal_care %>%
+  mutate(PAC = population_covered * SR)
+
+# Step 3: Summarise proportion covered by intervention_component
+proportion_coverage_service <- readiness_Antenatal_care %>%
+  group_by(intervention_component) %>%
+  summarise(proportion_covered = sum(PAC) / total_population)
+
+# View the result
+View(proportion_coverage_service)
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+# Ensure total population has been calculated earlier
+total_population <- cellStats(population_raster, stat = "sum", na.rm = TRUE)
+
+# Get unique interventions from the readiness data
+unique_interventions <- unique(readiness$Intervention)
+
+# Initialize an empty data frame to store all merged results
+all_results <- data.frame()
+
+# Loop through each unique intervention
+for (intervention in unique_interventions) {
+  
+  # Create a subset for the current intervention
+  subset_data <- readiness %>% filter(Intervention == intervention)
+  
+  # Clean the Fname column (trim whitespace and convert to lowercase)
+  subset_data <- subset_data %>%
+    mutate(Fname = trimws(tolower(Fname)))
+  
+  # Merge the subset with f_coverage_PHC_sf on Fname and calculate PAC
+  subset_merged <- subset_data %>%
+    left_join(f_coverage_PHC_sf %>% mutate(Fname = trimws(tolower(Fname))) %>% select(Fname, population_covered), by = "Fname") %>%
+    mutate(PAC = population_covered * SR)
+  
+  # Group by intervention_component and calculate the proportion of population covered
+  proportion_coverage_service <- subset_merged %>%
+    group_by(intervention_component) %>%
+    summarise(proportion_covered = sum(PAC, na.rm = TRUE) / total_population)
+  
+  # Add a column for the intervention name to keep track of each intervention's data
+  #proportion_coverage_service$intervention_name <- intervention_component
+  
+  # Merge the result row-wise into the final dataframe
+  all_results <- bind_rows(all_results, proportion_coverage_service)
+}
+
+# View the combined results for all interventions
+print(all_results)
+
+# Optionally, write the final results to a CSV file
+write.csv(all_results, "combined_intervention_population_coverage.csv", row.names = FALSE)
+
+
+dim(all_results)
+
+head(all_results)
+```
+
+
+
+```{r}
+
+prop_data<- all_results
+x<- proportion_coverage_service
+dim(x)
+names(prop_data)
+names(ID)
+
+merged_data <- ID %>%
+  left_join(prop_data, by = "intervention_component")
+View(merged_data)
+
+write.csv(merged_data, "prop_cov_PHC facilties_2.csv", row.names = FALSE)
+```
+
+
+
+
+
+```{r}
+# Step 1: Create intervention_identification by removing columns 9 to 22 and ensuring distinct rows for merge
+intervention_identification <- readiness %>%
+  select(-c(9:22)) %>%
+  distinct(intervention_component, .keep_all = TRUE)  # Ensure distinct rows based on intervention_component
+
+# Step 2: Merge intervention_identification with all_results by "intervention_component"
+# This ensures no repetition and keeps the number of rows consistent with all_results
+final_merged_results <- all_results %>%
+  left_join(intervention_identification, by = "intervention_component")
+
+# Step 3: View the final merged data
+head(final_merged_results)
+
+# Optional: Check dimensions to ensure it merged correctly
+dim(final_merged_results)
+
+# Optionally, save the merged data to a CSV file
+write.csv(final_merged_results, "final_merged_results.csv", row.names = FALSE)
+
+
+```
+
+
+
+
+
+
+```{r}
+
+
+district_shapefile <- st_read("unzipped_shapefiles/Malawi Shapefile-District Level/")
+ 
+
+district_shapefile <- st_transform(district_shapefile, crs(population_raster))
+
+
+district_sp <- as(district_shapefile, "Spatial")
+
+
+total_population_by_district <- extract(population_raster, district_sp, fun = sum, na.rm = TRUE, df = TRUE)
+
+
+total_population_by_district$Dist <- district_shapefile$District_Name  
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

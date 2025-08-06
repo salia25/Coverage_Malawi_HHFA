@@ -1,0 +1,575 @@
+---
+title: "coverge_RCH"
+output: html_document
+date: "2024-11-30"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(sf)
+library(raster)
+library(dplyr)
+library(tidyr)  # For replace_na function
+library(stringi)
+library(exactextractr)
+```
+
+
+
+
+```{r}
+setwd("C:/Users/sally/OneDrive/Desktop/uw academic/Thesis/malawi Survey/Indicators")
+```
+
+
+
+```{r}
+
+# Step 1: Load population raster
+population_raster <- raster("popuation raster/MWI_pph_2020_adj_v2.tif")
+
+
+# Calculate the total population across the entire raster (all cells)
+total_population_malawi <- cellStats(population_raster, stat = "sum", na.rm = TRUE)
+
+# Print the total population
+print(total_population_malawi)
+
+```
+
+```{r}
+
+#readiness<-read.csv("input file/data_readiness_4.csv")|> as_tibble()
+readiness_PHC<-read.csv("new taxonomy/short files for R 2/coverage_files/13_13/FR_RCH5_10km_12_13.csv")|> as_tibble()
+unique(readiness_PHC$SR)
+
+# Overwrite readiness$SR with the new binary values
+readiness_PHC$SR <- ifelse(is.na(readiness_PHC$SR), NA, ifelse(readiness_PHC$SR == TRUE, 1, 0))
+
+# Replace non-standard spaces in the columns
+readiness_PHC <- readiness_PHC %>%
+  mutate(across(c(Intervention, L2, L3, L4), ~ stri_replace_all_regex(., "\\s+", " ")))
+
+```
+
+
+```{r}
+
+# Calculate proportion ready for each Service_id and retain all columns
+readiness_summary_PHC <- readiness_PHC %>%
+    group_by(Service_id) %>%                                       # Group by Service_id
+    mutate(propotion_ready = sum(SR == 1) / n()*100) %>%               # Calculate readiness proportion
+    distinct(Service_id, .keep_all = TRUE) %>%                     # Keep only unique Service_id rows, retaining all columns
+    ungroup()                                                      # Remove grouping
+
+# View the resulting summary
+dim(readiness_summary_PHC)
+
+
+
+
+
+```
+
+```{r}
+f_5km_coverage_all<-read.csv("population by facaility/F_coverage_RCH- Copy.csv")|> as_tibble()
+
+f_5km_coverage_all <- f_5km_coverage_all %>%
+  rename(FNAME = Fname)
+```
+
+
+
+#km buffer
+
+
+
+```{r}
+
+
+
+# Initialize a results data frame
+population_summary_all_2 <- data.frame(
+  Service_id = character(),
+  Total_Individual_Population = numeric(),
+  Dissolved_Population = numeric(),
+  stringsAsFactors = FALSE
+)
+
+```
+
+
+
+```{r}
+
+# Reproject `f_5km_coverage_all` to match the CRS of the population raster
+f_5km_coverage_all_sf <- st_as_sf(f_5km_coverage_all, coords = c("A109__Long", "A109__Lati"), crs = 4326)
+f_5km_coverage_all_sf <- st_transform(f_5km_coverage_all_sf, crs = st_crs(population_raster))
+
+# Create buffers around each facility point (e.g., 5 km radius)
+f_5km_coverage_all_buffers <- st_buffer(f_5km_coverage_all_sf, dist = 5000)
+
+# Loop through each unique `Service_id` in `readiness`
+for (service_id in unique(readiness_PHC$Service_id)) {
+  
+  # Step 1: Filter to ready facilities for the current `Service_id`
+  ready_facilities <- readiness_PHC %>%
+    filter(Service_id == service_id, SR == 1) %>%
+    dplyr::select(FNAME)
+  
+  # Skip if there are no ready facilities for the current service_id
+  if (nrow(ready_facilities) == 0) {
+    next
+  }
+  
+  # Select buffers for ready facilities and confirm geometry type
+  ready_facility_coverage <- f_5km_coverage_all_buffers %>%
+    filter(FNAME %in% ready_facilities$FNAME) %>%
+    dplyr::select(FNAME, population_within_5km) %>%
+    st_cast("MULTIPOLYGON", warn = FALSE)
+  
+  # Step 2: Calculate total individual population within 5 km
+  total_individual_population <- sum(ready_facility_coverage$population_within_5km, na.rm = TRUE)
+  
+  # Step 3: Dissolve (union) the buffer areas to combine overlaps
+  dissolved_coverage <- st_union(ready_facility_coverage) %>%
+    st_cast("MULTIPOLYGON", warn = FALSE)
+  
+  # Step 4: Reproject the dissolved area to the raster CRS if needed
+  dissolved_coverage_projected <- st_transform(dissolved_coverage, crs = st_crs(population_raster))
+  
+  # Step 5: Extract population within the dissolved area using `exact_extract`
+  dissolved_population <- exact_extract(population_raster, dissolved_coverage_projected, 'sum')
+  
+  # Store results in the `population_summary_all_2` data frame
+  population_summary_all_2 <- population_summary_all_2 %>%
+    add_row(Service_id = service_id,
+            Total_Individual_Population = total_individual_population,
+            Dissolved_Population = dissolved_population)
+}
+
+# Step 6: Save the results as a CSV file
+#write.csv(population_summary_all_2, "population_summary_all_2_results.csv", row.names = FALSE)
+
+# Display the summary for verification
+print(population_summary_all_2)
+
+```
+
+
+
+
+```{r}
+merged_summary_2 <- left_join(readiness_summary_PHC, population_summary_all_2, by = "Service_id")
+
+
+
+
+# Remove the SR column from merged_summary_2
+merged_summary_2 <- merged_summary_2 %>% dplyr::select(-SR)
+
+# Verify that SR has been removed
+names(merged_summary_2)
+```
+
+```{r}
+merged_summary_2 <- merged_summary_2 %>%
+  mutate(population_covered = Dissolved_Population / total_population_malawi)
+
+# View the updated data frame to confirm
+head(merged_summary_2)
+
+
+# Calculate the range of `population_covered`, excluding NA values
+range_population_covered <- range(merged_summary_2$population_covered, na.rm = TRUE)
+print(range_population_covered)
+
+
+
+write.csv(merged_summary_2, "read_pop_coverage_5km_RCH_12_16.csv", row.names = FALSE)
+```
+
+#8km buffer
+
+
+```{r}
+
+
+
+# Initialize a results data frame
+population_summary_all_2 <- data.frame(
+  Service_id = character(),
+  Total_Individual_Population = numeric(),
+  Dissolved_Population = numeric(),
+  stringsAsFactors = FALSE
+)
+
+```
+
+
+
+```{r}
+
+# Reproject `f_5km_coverage_all` to match the CRS of the population raster
+f_5km_coverage_all_sf <- st_as_sf(f_5km_coverage_all, coords = c("A109__Long", "A109__Lati"), crs = 4326)
+f_5km_coverage_all_sf <- st_transform(f_5km_coverage_all_sf, crs = st_crs(population_raster))
+
+# Create buffers around each facility point (e.g., 5 km radius)
+f_5km_coverage_all_buffers <- st_buffer(f_5km_coverage_all_sf, dist = 8000)
+
+# Loop through each unique `Service_id` in `readiness`
+for (service_id in unique(readiness_PHC$Service_id)) {
+  
+  # Step 1: Filter to ready facilities for the current `Service_id`
+  ready_facilities <- readiness_PHC %>%
+    filter(Service_id == service_id, SR == 1) %>%
+    dplyr::select(FNAME)
+  
+  # Skip if there are no ready facilities for the current service_id
+  if (nrow(ready_facilities) == 0) {
+    next
+  }
+  
+  # Select buffers for ready facilities and confirm geometry type
+  ready_facility_coverage <- f_5km_coverage_all_buffers %>%
+    filter(FNAME %in% ready_facilities$FNAME) %>%
+    dplyr::select(FNAME, population_within_5km) %>%
+    st_cast("MULTIPOLYGON", warn = FALSE)
+  
+  # Step 2: Calculate total individual population within 5 km
+  total_individual_population <- sum(ready_facility_coverage$population_within_5km, na.rm = TRUE)
+  
+  # Step 3: Dissolve (union) the buffer areas to combine overlaps
+  dissolved_coverage <- st_union(ready_facility_coverage) %>%
+    st_cast("MULTIPOLYGON", warn = FALSE)
+  
+  # Step 4: Reproject the dissolved area to the raster CRS if needed
+  dissolved_coverage_projected <- st_transform(dissolved_coverage, crs = st_crs(population_raster))
+  
+  # Step 5: Extract population within the dissolved area using `exact_extract`
+  dissolved_population <- exact_extract(population_raster, dissolved_coverage_projected, 'sum')
+  
+  # Store results in the `population_summary_all_2` data frame
+  population_summary_all_2 <- population_summary_all_2 %>%
+    add_row(Service_id = service_id,
+            Total_Individual_Population = total_individual_population,
+            Dissolved_Population = dissolved_population)
+}
+
+# Step 6: Save the results as a CSV file
+#write.csv(population_summary_all_2, "population_summary_all_2_results.csv", row.names = FALSE)
+
+# Display the summary for verification
+print(population_summary_all_2)
+
+```
+
+
+
+
+```{r}
+merged_summary_2 <- left_join(readiness_summary_PHC, population_summary_all_2, by = "Service_id")
+
+
+
+
+# Remove the SR column from merged_summary_2
+merged_summary_2 <- merged_summary_2 %>% dplyr::select(-SR)
+
+# Verify that SR has been removed
+names(merged_summary_2)
+```
+
+```{r}
+merged_summary_2 <- merged_summary_2 %>%
+  mutate(population_covered = Dissolved_Population / total_population_malawi)
+
+# View the updated data frame to confirm
+head(merged_summary_2)
+
+
+# Calculate the range of `population_covered`, excluding NA values
+range_population_covered <- range(merged_summary_2$population_covered, na.rm = TRUE)
+print(range_population_covered)
+
+
+
+write.csv(merged_summary_2, "population_coverage_8km_RCH.csv", row.names = FALSE)
+```
+
+#8km buffer
+
+
+```{r}
+
+
+
+# Initialize a results data frame
+population_summary_all_2 <- data.frame(
+  Service_id = character(),
+  Total_Individual_Population = numeric(),
+  Dissolved_Population = numeric(),
+  stringsAsFactors = FALSE
+)
+
+```
+
+
+
+```{r}
+
+# Reproject `f_5km_coverage_all` to match the CRS of the population raster
+f_5km_coverage_all_sf <- st_as_sf(f_5km_coverage_all, coords = c("A109__Long", "A109__Lati"), crs = 4326)
+f_5km_coverage_all_sf <- st_transform(f_5km_coverage_all_sf, crs = st_crs(population_raster))
+
+# Create buffers around each facility point (e.g., 5 km radius)
+f_5km_coverage_all_buffers <- st_buffer(f_5km_coverage_all_sf, dist = 10000)
+
+# Loop through each unique `Service_id` in `readiness`
+for (service_id in unique(readiness_PHC$Service_id)) {
+  
+  # Step 1: Filter to ready facilities for the current `Service_id`
+  ready_facilities <- readiness_PHC %>%
+    filter(Service_id == service_id, SR == 1) %>%
+    dplyr::select(FNAME)
+  
+  # Skip if there are no ready facilities for the current service_id
+  if (nrow(ready_facilities) == 0) {
+    next
+  }
+  
+  # Select buffers for ready facilities and confirm geometry type
+  ready_facility_coverage <- f_5km_coverage_all_buffers %>%
+    filter(FNAME %in% ready_facilities$FNAME) %>%
+    dplyr::select(FNAME, population_within_5km) %>%
+    st_cast("MULTIPOLYGON", warn = FALSE)
+  
+  # Step 2: Calculate total individual population within 5 km
+  total_individual_population <- sum(ready_facility_coverage$population_within_5km, na.rm = TRUE)
+  
+  # Step 3: Dissolve (union) the buffer areas to combine overlaps
+  dissolved_coverage <- st_union(ready_facility_coverage) %>%
+    st_cast("MULTIPOLYGON", warn = FALSE)
+  
+  # Step 4: Reproject the dissolved area to the raster CRS if needed
+  dissolved_coverage_projected <- st_transform(dissolved_coverage, crs = st_crs(population_raster))
+  
+  # Step 5: Extract population within the dissolved area using `exact_extract`
+  dissolved_population <- exact_extract(population_raster, dissolved_coverage_projected, 'sum')
+  
+  # Store results in the `population_summary_all_2` data frame
+  population_summary_all_2 <- population_summary_all_2 %>%
+    add_row(Service_id = service_id,
+            Total_Individual_Population = total_individual_population,
+            Dissolved_Population = dissolved_population)
+}
+
+# Step 6: Save the results as a CSV file
+#write.csv(population_summary_all_2, "population_summary_all_2_results.csv", row.names = FALSE)
+
+# Display the summary for verification
+print(population_summary_all_2)
+
+```
+
+
+
+
+```{r}
+merged_summary_2 <- left_join(readiness_summary_PHC, population_summary_all_2, by = "Service_id")
+
+
+
+
+# Remove the SR column from merged_summary_2
+merged_summary_2 <- merged_summary_2 %>% dplyr::select(-SR)
+
+# Verify that SR has been removed
+names(merged_summary_2)
+```
+
+```{r}
+merged_summary_2 <- merged_summary_2 %>%
+  mutate(population_covered = Dissolved_Population / total_population_malawi)
+
+# View the updated data frame to confirm
+head(merged_summary_2)
+
+
+# Calculate the range of `population_covered`, excluding NA values
+range_population_covered <- range(merged_summary_2$population_covered, na.rm = TRUE)
+print(range_population_covered)
+
+
+
+write.csv(merged_summary_2, "population_coverage_10km_RCH.csv", row.names = FALSE)
+```
+
+
+# Readiness summary STC25KM
+
+```{r}
+
+#readiness<-read.csv("input file/data_readiness_4.csv")|> as_tibble()
+readiness_STC<-read.csv("new taxonomy/short files for R 2/coverage_files/13_13/FR_STC_25km_12_13.csv")|> as_tibble()
+unique(readiness_STC$SR)
+
+# Overwrite readiness$SR with the new binary values
+readiness_STC$SR <- ifelse(is.na(readiness_STC$SR), NA, ifelse(readiness_STC$SR == TRUE, 1, 0))
+
+# Replace non-standard spaces in the columns
+readiness_STC <- readiness_STC %>%
+  mutate(across(c(Intervention, L2, L3, L4), ~ stri_replace_all_regex(., "\\s+", " ")))
+
+```
+
+
+```{r}
+
+
+
+
+
+# Calculate proportion ready for each Service_id and retain all columns
+readiness_summary_STC <- readiness_STC %>%
+    group_by(Service_id) %>%                                       # Group by Service_id
+    mutate(propotion_ready = sum(SR == 1) / n()*100) %>%               # Calculate readiness proportion
+    distinct(Service_id, .keep_all = TRUE) %>%                     # Keep only unique Service_id rows, retaining all columns
+    ungroup()                                                      # Remove grouping
+
+# View the resulting summary
+dim(readiness_summary_STC)
+
+
+
+
+
+```
+
+
+
+```{r}
+
+# Step 1: Load population raster
+population_raster <- raster("popuation raster/MWI_pph_2020_adj_v2.tif")
+
+
+# Calculate the total population across the entire raster (all cells)
+total_population_malawi <- cellStats(population_raster, stat = "sum", na.rm = TRUE)
+
+# Print the total population
+print(total_population_malawi)
+
+```
+
+
+
+```{r}
+
+
+f_coverage_shs<-read.csv("population by facaility/25_km_DH_CH.csv")|> as_tibble()
+
+f_coverage_shs <- f_coverage_shs %>%
+  rename(FNAME = Fname)
+
+
+f_coverage_PHC<-read.csv("population by facaility/csv_Healthcentre&RuralCommunityHospital Readiness.csv")|> as_tibble()
+
+f_coverage_PHC <- f_coverage_PHC %>%
+  rename(FNAME = Fname)
+
+
+```
+
+
+#25 buffer zones DH_CH
+#note: you need to update the readiness data so you can assess the readiness at S&TH it is calculating the covergae correctly though
+
+```{r}
+
+# Load the f_coverage_shs data and set CRS to match the population raster
+f_coverage_shs_sf <- st_as_sf(f_coverage_shs, coords = c("A109__Longitude", "A109__Latitude"), crs = 4326)
+f_coverage_shs_sf <- st_transform(f_coverage_shs_sf, crs = st_crs(population_raster))
+
+# Initialize results data frame
+population_summary_shs <- data.frame(
+  Service_id = character(),
+  Total_Individual_Population = numeric(),
+  Dissolved_Population = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Create buffers around all facilities initially (25 km radius)
+f_coverage_shs_buffers <- st_buffer(f_coverage_shs_sf, dist = 45000)
+
+# Loop through each unique `Service_id` in `readiness`
+for (service_id in unique(readiness_STC$Service_id)) {
+  
+  # Filter to ready facilities for the current `Service_id`
+  ready_facilities <- readiness_STC %>%
+    filter(Service_id == service_id, SR == 1) %>%
+    dplyr::select(FNAME)
+  
+  # Skip if there are no ready facilities for the current service_id
+  if (nrow(ready_facilities) == 0) {
+    next
+  }
+  
+  # Filter buffers for ready facilities and validate geometries
+  ready_facility_coverage <- f_coverage_shs_buffers %>%
+    filter(FNAME %in% ready_facilities$FNAME) %>%
+    dplyr::select(FNAME, population_25km) %>%
+    st_make_valid() %>%
+    st_cast("MULTIPOLYGON", warn = FALSE)
+  
+  # Calculate total individual population within 25 km
+  total_individual_population <- sum(ready_facility_coverage$population_25km, na.rm = TRUE)
+  
+  # Dissolve (union) the buffer areas to combine overlaps and make valid
+  dissolved_coverage <- st_union(ready_facility_coverage) %>%
+    st_make_valid() %>%
+    st_cast("MULTIPOLYGON", warn = FALSE)
+  
+  # Reproject the dissolved area to the raster CRS if needed
+  dissolved_coverage_projected <- st_transform(dissolved_coverage, crs = st_crs(population_raster))
+  
+  # Extract population within the dissolved area using `exact_extract`
+  dissolved_population <- exact_extract(population_raster, dissolved_coverage_projected, 'sum')
+  
+  # Store results in the `population_summary_shs` data frame
+  population_summary_shs <- population_summary_shs %>%
+    add_row(Service_id = service_id,
+            Total_Individual_Population = total_individual_population,
+            Dissolved_Population = dissolved_population)
+}
+
+# Display the summary for verification
+head(population_summary_shs)
+
+# Optional: Save the results as a CSV file for further inspection
+#write.csv(population_summary_shs, "population_summary_shs_results.csv", row.names = FALSE)
+
+
+
+```
+
+
+```{r}
+# Merge readiness_summary with population_summary by "Service_id"
+#merged_summary_shs <- left_join(readiness_summary_STC, population_summary_shs, by = "Service_id")
+
+# View the resulting merged data frame
+#head(merged_summary_shs)
+
+
+merged_summary_shs <- left_join(readiness_summary_STC, population_summary_shs, by = "Service_id") %>%
+  dplyr::select(-SR) %>% # Remove the SR column if present
+  mutate(population_covered = Dissolved_Population / total_population_malawi)
+
+write.csv(merged_summary_shs,"merged_readiness_pop_shs_45km.csv", row.names = TRUE)
+
+```

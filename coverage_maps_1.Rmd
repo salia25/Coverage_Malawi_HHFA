@@ -1,0 +1,975 @@
+---
+title: "coverge_maps_1"
+output: html_document
+date: "2025-07-01"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+# Load libraries
+library(sf)
+library(raster)
+library(dplyr)
+library(exactextractr)
+library(ggplot2)
+library(stringr)
+library(pdftools)
+
+library(ggpubr)
+library(patchwork)
+library(cowplot)
+library(stringr)
+library(gridExtra)
+```
+
+```{r}
+# Set working directory
+setwd("C:/Users/sally/OneDrive/Desktop/uw academic/Thesis/malawi Survey/coverage maps")
+```
+
+```{r}
+# Load data
+cov_hc <- read.csv("coverage data/FR_PHC_5km_12_13.csv")
+cov_RCH <- read.csv("coverage data/FR_RCH5_10km_12_13.csv")
+cov_STC<-read.csv("coverage data/FR_STC_25km_12_13.csv")
+pop_raster <- raster("population raster/MWI_pph_2020_adj_v2.tif")
+districts <- st_read("Malawi Shapefile-District Level/mwi_admbnda_adm2_nso_20181016.shp") %>%
+  st_transform(crs = st_crs(pop_raster)) %>%
+  st_make_valid()
+
+```
+
+
+
+```{r}
+districts <- st_read("Malawi Shapefile-District Level/mwi_admbnda_adm2_nso_20181016.shp") %>%
+  st_transform(crs = st_crs(pop_raster)) %>%
+  st_make_valid()
+
+# Convert facilities to spatial features
+cov_hc_sf <- st_as_sf(cov_hc, coords = c("A109__LONGITUDE", "A109__LATITUDE"), crs = 4326) %>%
+  st_transform(crs = st_crs(pop_raster))
+
+# 🔍 Step 1: Select one intervention (e.g., "COM_1")
+service_id <- "COM_1"
+ready_facilities <- cov_hc_sf %>%
+  filter(Service_id == service_id, SR == TRUE)
+
+# Check if any ready facilities
+if (nrow(ready_facilities) > 0) {
+
+  # 🌀 Step 2: Create 5km buffer
+  ready_buffers <- st_buffer(ready_facilities, dist = 5000)
+
+  # 🧊 Step 3: Clip buffers with district polygons
+  buffer_district_intersection <- st_intersection(ready_buffers, districts %>% dplyr::select(ADM2_EN))
+
+  # 💠 Step 4: Dissolve buffers by district
+  buffer_dissolved <- buffer_district_intersection %>%
+    group_by(ADM2_EN) %>%
+    summarise(geometry = st_union(geometry), .groups = "drop")
+
+  # ✅ Step 5: Calculate covered population in buffer areas by district
+  buffer_dissolved$Covered_Pop <- exact_extract(pop_raster, buffer_dissolved, 'sum')
+
+  # 📦 Step 6: Get total district population
+  district_pop <- districts %>%
+    mutate(District_Pop = exact_extract(pop_raster, geometry, 'sum')) %>%
+    st_drop_geometry() %>%
+    dplyr::select(ADM2_EN, District_Pop)
+
+  # 🧮 Step 7: Join and compute coverage proportion
+  result <- buffer_dissolved %>%
+    left_join(district_pop, by = "ADM2_EN") %>%
+    mutate(Service_id = service_id,
+           Proportion_Covered = Covered_Pop / District_Pop) %>%
+    st_drop_geometry()
+
+  # 🔍 View results
+  print(result)
+  
+} else {
+  message("❌ No ready facilities found for Service_id = ", service_id)
+}
+```
+
+
+
+
+
+### coverge assessment by distric for basic PHC services
+
+```{r}
+# 📦 Prepare results container
+all_results <- data.frame()
+
+# 🔁 Loop through each unique Service_id
+for (service_id in unique(cov_hc$Service_id)) {
+  
+  # 1️⃣ Filter ready facilities for this service
+  ready_facilities <- cov_hc_sf %>%
+    filter(Service_id == service_id, SR == TRUE)
+  
+  if (nrow(ready_facilities) == 0) {
+    message("❌ No ready facilities found for: ", service_id)
+    next
+  }
+
+  # 2️⃣ Create 5 km buffer
+  ready_buffers <- st_buffer(ready_facilities, dist = 5000)
+  
+  # 3️⃣ Intersect with districts
+  buffer_district_intersection <- st_intersection(
+    ready_buffers,
+    districts %>% dplyr::select(ADM2_EN)
+  )
+  
+  # 4️⃣ Dissolve buffers by district
+  buffer_dissolved <- buffer_district_intersection %>%
+    group_by(ADM2_EN) %>%
+    summarise(geometry = st_union(geometry), .groups = "drop")
+  
+  # 5️⃣ Extract covered population
+  buffer_dissolved$Covered_Pop <- exact_extract(pop_raster, buffer_dissolved, 'sum')
+  
+  # 6️⃣ Get total district population
+district_pop <- districts %>%
+  mutate(District_Pop = exact_extract(pop_raster, geometry, 'sum')) %>%
+  st_drop_geometry() %>%
+  dplyr::select(ADM2_EN, District_Pop)
+
+# 7️⃣ Ensure all districts are represented, even if not covered
+result_1 <- district_pop %>%
+  left_join(buffer_dissolved %>% st_drop_geometry(), by = "ADM2_EN") %>%
+  mutate(
+    Service_id = service_id,
+    Covered_Pop = ifelse(is.na(Covered_Pop), 0, Covered_Pop),
+    Proportion_Covered = Covered_Pop / District_Pop
+  ) %>%
+  dplyr::select(Service_id, ADM2_EN, Covered_Pop, District_Pop, Proportion_Covered)
+  
+  # 8️⃣ Append to full results
+  all_results <- bind_rows(all_results, result_1)
+  
+  message("✅ Done: ", service_id)
+}
+
+write.csv(all_results, "PHC_district_level.csv", row.names = FALSE)
+```
+
+
+```{r}
+all_results<-read.csv("PHC_district_level.csv")
+```
+
+
+```{r}
+
+# 🧾 Step 1: Create a distinct lookup table of intervention details
+service_details <- cov_hc %>%
+  dplyr::select(Service_id, Group, Subgroup, Intervention.class, Intervention, L2, L3, L4) %>%
+  distinct()
+
+# 🔗 Step 2: Merge with all_results
+all_results_merged <- all_results %>%
+  left_join(service_details, by = "Service_id")
+
+# 📋 Preview the merged result
+str(all_results_merged)
+
+```
+
+
+
+
+
+```{r}
+
+
+# Specify the exact file path to the .shp file
+#shapefile_path <- "results/Malawi Shapefile-District Level/mwi_admbnda_adm2_nso_20181016.shp"
+
+
+shapefile_path <- "../Indicators/new taxonomy/results/Malawi Shapefile-District Level/mwi_admbnda_adm2_nso_20181016.shp"
+
+# Load the shapefile
+malawi_shapefile <- st_read(shapefile_path)
+
+# View the structure of the shapefile
+print(malawi_shapefile)
+
+# Plot the Malawi map
+ggplot(data = malawi_shapefile) +
+  geom_sf(fill = "lightblue", color = "black") +
+  theme_minimal() +
+  labs(title = "Map of Malawi Districts (Layer: mwi_admbnda_adm2_nso_20181016)")
+
+```
+
+
+
+
+```{r}
+
+
+# Define breaks and labels
+coverage_breaks <- c(0, 0.2, 0.4, 0.6, 0.8, 1.0001)
+coverage_labels <- c("0–19%", "20–39%", "40–59%", "60–79%", "80–100%")
+
+# Color-blind-friendly palette (can customize as needed)
+coverage_colors <- c(
+  "0–19%"   = "#FFA07A",
+  "20–39%"  = "#E6D5B8",
+  "40–59%"  = "#FFFFB3",
+  "60–79%"  = "#66CDAA",
+  "80–100%" = "#CC79A7")
+
+
+# Open PDF to save all maps
+pdf("all_coverage_maps_standardized_final_fixed_titles.pdf", width = 8, height = 6)
+
+# Loop through each intervention
+for (service_to_plot in unique(all_results_merged$Service_id)) {
+  
+  # Get service info
+  service_info <- all_results_merged %>%
+    filter(Service_id == service_to_plot) %>%
+    distinct(Intervention, L2) %>%
+    slice(1)
+
+  # Safely encode text
+  intervention_name <- iconv(service_info$Intervention, from = "", to = "UTF-8", sub = "")
+  subtitle <- iconv(service_info$L2, from = "", to = "UTF-8", sub = "")
+
+  # Join coverage data to shape
+  coverage_map_data <- malawi_shapefile %>%
+    left_join(
+      all_results_merged %>% filter(Service_id == service_to_plot),
+      by = c("ADM2_EN")
+    )
+
+  # Replace out-of-range values
+  coverage_map_data <- coverage_map_data %>%
+    mutate(Proportion_Covered = ifelse(Proportion_Covered < 0 | Proportion_Covered > 1, NA, Proportion_Covered))
+
+  # Categorize coverage
+  coverage_map_data <- coverage_map_data %>%
+    mutate(
+      Coverage_Category = cut(
+        Proportion_Covered,
+        breaks = coverage_breaks,
+        labels = coverage_labels,
+        include.lowest = TRUE,
+        right = FALSE
+      ),
+      Coverage_Category = factor(Coverage_Category, levels = coverage_labels)
+    )
+
+  # Warn if some coverage values fall outside bins
+  if (any(is.na(coverage_map_data$Coverage_Category) & !is.na(coverage_map_data$Proportion_Covered))) {
+    warning(paste("Check binning for Service_id =", service_to_plot))
+  }
+
+  # Plot map
+  p <- ggplot(coverage_map_data) +
+    geom_sf(aes(fill = Coverage_Category), color = "white", size = 0.3) +
+    scale_fill_manual(
+      values = coverage_colors,
+      name = "Coverage",
+      drop = FALSE,
+      na.translate = FALSE
+    ) +
+    theme_minimal(base_size = 14) +
+    labs(
+      title = intervention_name,
+      subtitle = subtitle
+    ) +
+    theme(
+      plot.title = element_text(face = "bold", size = 14),
+      plot.subtitle = element_text(size = 14),
+      legend.position = "right",
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      panel.grid = element_blank()
+    )
+
+  # Print to PDF
+  print(p)
+}
+
+# Close PDF file
+dev.off()
+
+
+
+
+```
+
+
+```{r}
+# Convert facilities to spatial features
+cov_RCH_sf <- st_as_sf(cov_RCH, coords = c("A109__LONGITUDE", "A109__LATITUDE"), crs = 4326) %>%
+  st_transform(crs = st_crs(pop_raster))
+
+# Results container
+all_results_RCH <- data.frame()
+
+# Loop through each unique Service_id
+for (service_id in unique(cov_RCH$Service_id)) {
+  
+  ready_facilities <- cov_RCH_sf %>%
+    filter(Service_id == service_id, SR == TRUE)
+  
+  if (nrow(ready_facilities) == 0) {
+    message("❌ No ready facilities found for: ", service_id)
+    next
+  }
+
+  # Use 25 km buffer
+  ready_buffers <- st_buffer(ready_facilities, dist = 25000)
+  
+  # Intersect with districts
+  buffer_district_intersection <- st_intersection(ready_buffers, districts %>% dplyr::select(ADM2_EN))
+  
+  # Dissolve by district
+  buffer_dissolved <- buffer_district_intersection %>%
+    group_by(ADM2_EN) %>%
+    summarise(geometry = st_union(geometry), .groups = "drop")
+  
+  # Extract population
+  buffer_dissolved$Covered_Pop <- exact_extract(pop_raster, buffer_dissolved, 'sum')
+  
+  # District total pop
+  district_pop <- districts %>%
+    mutate(District_Pop = exact_extract(pop_raster, geometry, 'sum')) %>%
+    st_drop_geometry() %>%
+    dplyr::select(ADM2_EN, District_Pop)
+  
+  # Merge and calculate proportion
+  result_2 <- district_pop %>%
+    left_join(st_drop_geometry(buffer_dissolved), by = "ADM2_EN") %>%
+    mutate(
+      Service_id = service_id,
+      Covered_Pop = ifelse(is.na(Covered_Pop), 0, Covered_Pop),
+      Proportion_Covered = Covered_Pop / District_Pop
+    ) %>%
+    dplyr::select(Service_id, ADM2_EN, Covered_Pop, District_Pop, Proportion_Covered)
+  
+  # Append
+  all_results_RCH <- bind_rows(all_results_RCH, result_2)
+  
+  message("✅ Done: ", service_id)
+}
+
+write.csv(all_results_RCH , "RCH_district_level.csv", row.names = FALSE)
+
+```
+
+```{r}
+all_results_RCH<-read.csv("saved data for plotting/RCH_district_level.csv")
+```
+
+
+####Management of postpartum Haemorrage is skipped in the above code because it is all 0 ready facailaties. I fixed it manullay to produce the map#################
+  
+```{r}
+# Get intervention details
+service_details_rch <- cov_RCH %>%
+  dplyr::select(Service_id, Group, Subgroup, Intervention.class, Intervention, L2, L3, L4) %>%
+  distinct()
+
+# Merge
+all_results_merged_rch <- all_results_RCH %>%
+  left_join(service_details_rch, by = "Service_id")
+
+
+# Set Proportion_Covered to 0 for Service_id == "REP_42"
+all_results_merged_rch <- all_results_merged_rch %>%
+  mutate(Proportion_Covered = ifelse(Service_id == "REP_42", 0, Proportion_Covered))
+
+
+```
+
+```{r}
+# Define breaks and color palette
+coverage_breaks <- c(0, 0.2, 0.4, 0.6, 0.8, 1.0001)
+coverage_labels <- c("0–19%", "20–39%", "40–59%", "60–79%", "80–100%")
+coverage_colors <- c(
+  "0–19%"   = "#FFA07A",
+  "20–39%"  = "#E6D5B8",
+  "40–59%"  = "#FFFFB3",
+  "60–79%"  = "#66CDAA",
+  "80–100%" = "#CC79A7")
+
+
+
+pdf("cov_RCH_coverage_maps.pdf", width = 8, height = 6)
+
+for (service_to_plot in unique(all_results_merged_rch$Service_id)) {
+  
+  service_info <- all_results_merged_rch %>%
+    filter(Service_id == service_to_plot) %>%
+    distinct(Intervention, L2) %>%
+    slice(1)
+  
+  # Handle UTF-8 encoding
+  intervention_name <- iconv(service_info$Intervention, from = "", to = "UTF-8", sub = "")
+  subtitle <- iconv(service_info$L2, from = "", to = "UTF-8", sub = "")
+  
+  # Compose titles
+  title_text <- str_wrap(intervention_name, width = 60)
+  subtitle_text <- str_wrap(subtitle, width = 60)
+
+  coverage_map_data <- districts %>%
+    left_join(
+      all_results_merged_rch %>% filter(Service_id == service_to_plot),
+      by = "ADM2_EN"
+    ) %>%
+    mutate(Proportion_Covered = ifelse(Proportion_Covered < 0 | Proportion_Covered > 1, NA, Proportion_Covered)) %>%
+    mutate(
+      Coverage_Category = cut(Proportion_Covered, breaks = coverage_breaks, labels = coverage_labels, include.lowest = TRUE),
+      Coverage_Category = factor(Coverage_Category, levels = coverage_labels)
+    )
+  
+  p <- ggplot(coverage_map_data) +
+    geom_sf(aes(fill = Coverage_Category), color = "white", size = 0.3) +
+    scale_fill_manual(values = coverage_colors, name = "Coverage", drop = FALSE, na.translate = FALSE) +
+    labs(title = title_text, subtitle = subtitle_text) +
+    theme_minimal(base_size = 14) +
+    theme(
+      plot.title = element_text(face = "bold", size = 14),
+      plot.subtitle = element_text(size = 13),
+      legend.position = "right",
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      panel.grid = element_blank()
+    )
+  
+  print(p)
+}
+
+dev.off()
+
+
+```
+
+
+
+
+
+#### For  STC
+
+```{r}
+# Convert facilities to spatial features
+cov_STC_sf <- st_as_sf(cov_STC, coords = c("A109__LONGITUDE", "A109__LATITUDE"), crs = 4326) %>%
+  st_transform(crs = st_crs(pop_raster))
+
+# Results container
+all_results_STC <- data.frame()
+
+# Loop through each unique Service_id
+for (service_id in unique(cov_STC$Service_id)) {
+  
+  ready_facilities <- cov_STC_sf %>%
+    filter(Service_id == service_id, SR == TRUE)
+  
+  if (nrow(ready_facilities) == 0) {
+    message("❌ No ready facilities found for: ", service_id)
+    next
+  }
+
+  # Use 25 km buffer
+  ready_buffers <- st_buffer(ready_facilities, dist = 25000)
+  
+  # Intersect with districts
+  buffer_district_intersection <- st_intersection(ready_buffers, districts %>% dplyr::select(ADM2_EN))
+  
+  # Dissolve by district
+  buffer_dissolved <- buffer_district_intersection %>%
+    group_by(ADM2_EN) %>%
+    summarise(geometry = st_union(geometry), .groups = "drop")
+  
+  # Extract population
+  buffer_dissolved$Covered_Pop <- exact_extract(pop_raster, buffer_dissolved, 'sum')
+  
+  # District total pop
+  district_pop <- districts %>%
+    mutate(District_Pop = exact_extract(pop_raster, geometry, 'sum')) %>%
+    st_drop_geometry() %>%
+    dplyr::select(ADM2_EN, District_Pop)
+  
+  # Merge and calculate proportion
+  result_3 <- district_pop %>%
+    left_join(st_drop_geometry(buffer_dissolved), by = "ADM2_EN") %>%
+    mutate(
+      Service_id = service_id,
+      Covered_Pop = ifelse(is.na(Covered_Pop), 0, Covered_Pop),
+      Proportion_Covered = Covered_Pop / District_Pop
+    ) %>%
+    dplyr::select(Service_id, ADM2_EN, Covered_Pop, District_Pop, Proportion_Covered)
+  
+  # Append
+  all_results_STC <- bind_rows(all_results_STC, result_3)
+  
+  message("✅ Done: ", service_id)
+}
+
+write.csv(all_results_STC , "STC_district_level.csv", row.names = FALSE)
+
+```
+
+
+```{r}
+service_details_stc <- cov_STC %>%
+  dplyr::select(Service_id, Group, Subgroup, Intervention.class, Intervention, L2) %>%
+  distinct()
+
+all_results_stc_merged <- all_results_STC %>%
+  left_join(service_details_stc, by = "Service_id")
+
+
+```
+
+
+```{r}
+# Define breaks and color palette (same as RCH)
+coverage_breaks <- c(0, 0.2, 0.4, 0.6, 0.8, 1.0001)
+coverage_labels <- c("0–19%", "20–39%", "40–59%", "60–79%", "80–100%")
+coverage_colors <- c(
+  "0–19%"   = "#FFA07A",
+  "20–39%"  = "#E6D5B8",
+  "40–59%"  = "#FFFFB3",
+  "60–79%"  = "#66CDAA",
+  "80–100%" = "#CC79A7")
+
+# Output PDF
+pdf("cov_STC_coverage_maps.pdf", width = 8, height = 6)
+
+# Loop through each STC service
+for (service_to_plot in unique(all_results_stc_merged$Service_id)) {
+  
+  # Extract intervention details
+  service_info <- all_results_stc_merged %>%
+    filter(Service_id == service_to_plot) %>%
+    distinct(Intervention, L2) %>%
+    slice(1)
+  
+  # UTF-8 encoding for clean text
+  intervention_name <- iconv(service_info$Intervention, from = "", to = "UTF-8", sub = "")
+  subtitle <- iconv(service_info$L2, from = "", to = "UTF-8", sub = "")
+  
+  # Wrap titles
+  title_text <- str_wrap(intervention_name, width = 60)
+  subtitle_text <- str_wrap(subtitle, width = 60)
+
+  # Join with districts and clean
+  coverage_map_data <- districts %>%
+    left_join(
+      all_results_stc_merged %>% filter(Service_id == service_to_plot),
+      by = "ADM2_EN"
+    ) %>%
+    mutate(Proportion_Covered = ifelse(Proportion_Covered < 0 | Proportion_Covered > 1, NA, Proportion_Covered)) %>%
+    mutate(
+      Coverage_Category = cut(Proportion_Covered, breaks = coverage_breaks, labels = coverage_labels, include.lowest = TRUE),
+      Coverage_Category = factor(Coverage_Category, levels = coverage_labels)
+    )
+  
+  # Plot
+  p <- ggplot(coverage_map_data) +
+    geom_sf(aes(fill = Coverage_Category), color = "white", size = 0.3) +
+    scale_fill_manual(values = coverage_colors, name = "Coverage", drop = FALSE, na.translate = FALSE) +
+    labs(title = title_text, subtitle = subtitle_text) +
+    theme_minimal(base_size = 14) +
+    theme(
+      plot.title = element_text(face = "bold", size = 14),
+      plot.subtitle = element_text(size = 13),
+      legend.position = "right",
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      panel.grid = element_blank()
+    )
+  
+  print(p)
+}
+
+dev.off()
+```
+
+
+
+```{r}
+
+ 
+pdf_phc <- "all_coverage_maps_standardized_final_fixed_titles.pdf"
+pdf_rch <- "cov_RCH_coverage_maps.pdf"
+pdf_stc <- "cov_STC_coverage_maps.pdf"
+
+# Output file
+output_combined <- "Combined_Coverage_Maps.pdf"
+
+# Create title page function
+add_title_page <- function(title_text, output_file) {
+  pdf(output_file, width = 10, height = 8)  # Open a temporary PDF
+  
+  # Set up blank plot
+  par(mar = c(0, 0, 0, 0))  # Remove margins
+  plot.new()
+  plot.window(xlim = c(0, 1), ylim = c(0, 1))  # Coordinate system from 0 to 1
+  
+  # Add centered text
+  text(0.5, 0.5, labels = title_text, cex = 2.2, font = 2)  # cex = font size, font = bold
+  
+  dev.off()
+}
+
+# Temporary title files
+title_phc <- "title_PHC.pdf"
+title_rch <- "title_RCH.pdf"
+title_stc <- "title_STC.pdf"
+
+# Create title pages
+add_title_page("District level coverage \nBasic Primary Health Care", title_phc)
+add_title_page("District level coverage \nAdvanced Primary Health Care", title_rch)
+add_title_page("District level coverage \nSpecialized and Tertiary Care", title_stc)
+
+# Combine everything into one PDF
+pdf_combine(
+  input = c(title_phc, pdf_phc, title_rch, pdf_rch, title_stc, pdf_stc),
+  output = output_combined
+)
+
+# Remove temporary titles
+unlink(c(title_phc, title_rch, title_stc))
+
+cat("✅ Combined PDF created at:", output_combined, "\n")
+
+```
+
+
+#### compriosn map#####
+
+
+```{r}
+
+
+# Step 1: Choose 5 L2 interventions to map
+selected_L2_values <- c(
+  "HIV treatment, ART first-line (no TB)",
+  "Management of drug susceptible pulmonary TB",
+  "at least two methods available ",
+  "Antidiabetic drugs and insulin",
+  "Inhalators, steroids, theophylline"
+)
+
+# Step 2: Custom display titles
+custom_titles <- c(
+  "HIV - First Line",
+  "Drug-Susceptible TB",
+  "Family Planning",
+  "Diabetes Mellitus",
+  "Chronic Asthma"
+)
+
+# Step 3: Filter for selected interventions
+phc_filtered <- all_results_merged %>% filter(L2 %in% selected_L2_values)
+
+# Step 4: Coverage bins and colors
+color_bins <- c(0, 0.2, 0.4, 0.6, 0.8, 1.0001)
+color_labels <- c("0–19%", "20–39%", "40–59%", "60–79%", "80–100%")
+color_palette_cb<- c(
+  "0–19%"   = "#FFA07A",
+  "20–39%"  = "#E6D5B8",
+  "40–59%"  = "#FFFFB3",
+  "60–79%"  = "#66CDAA",
+  "80–100%" = "#CC79A7")
+
+
+ 
+
+# Step 5: Generate maps
+MAPS <- list()
+for (i in seq_along(selected_L2_values)) {
+  l2_val <- selected_L2_values[i]
+  title <- custom_titles[i]
+  
+  data_to_plot <- phc_filtered %>% filter(L2 == l2_val)
+  
+  coverage_map_data <- districts %>%
+    left_join(data_to_plot, by = c("ADM2_EN" = "ADM2_EN")) %>%
+    mutate(
+      Proportion_Covered = ifelse(Proportion_Covered < 0 | Proportion_Covered > 1, NA, Proportion_Covered),
+      Coverage_Category = cut(Proportion_Covered, breaks = color_bins, labels = color_labels, include.lowest = TRUE)
+    )
+  
+  p <- ggplot(coverage_map_data) +
+    geom_sf(aes(fill = Coverage_Category), color = "white", size = 0.2) +
+    scale_fill_manual(values = color_palette_cb, drop = FALSE, na.value = "gray90") +
+    labs(title = title) +
+    theme_void() +
+    theme(
+      plot.title = element_text(size = 13, hjust = 0.5, face = "bold"),
+      legend.position = "none"
+    )
+  
+  MAPS[[i]] <- p
+}
+
+# Step 6: Shared Legend
+dummy <- data.frame(Coverage_Category = factor(color_labels, levels = color_labels), y = 1)
+legend_plot <- ggplot(dummy) +
+  geom_bar(aes(x = Coverage_Category, y = y, fill = Coverage_Category), stat = "identity") +
+  scale_fill_manual(values = color_palette_cb, name = "Coverage") +
+  theme_void() +
+  theme(legend.position = "bottom", legend.title = element_text(size = 12), legend.text = element_text(size = 10))
+shared_legend <- cowplot::get_legend(legend_plot)
+
+# Step 7: Assemble final plot
+combined_map <- patchwork::wrap_plots(MAPS, ncol = 5) &
+  theme(legend.position = "none")
+
+final_plot <- cowplot::plot_grid(combined_map, shared_legend, ncol = 1, rel_heights = c(0.9, 0.1))
+
+# Step 8: Save
+ggsave("output_maps/PHC_Coverage_5_Map_Comparison.tiff", plot = final_plot, width = 30, height = 8, dpi = 300)
+
+cat("✅ PHC 5-map coverage figure saved.\n")
+
+
+```
+
+
+```{r}
+# Selected interventions and titles
+selected_L2_values_2 <- c(
+  "Management of opportunistic infections associated with HIV|AIDS",
+  "Comprehensive treatment of severe malaria",
+  "Management of preterm delivery",
+  "CVD targeted screening at facility & Primary CVD prevention optimal - absolute CVD risk > 10% (antihypertensives, statins)",
+  "Treatment of acute exacerbation of asthma (Moderate)"
+)
+
+custom_titles <- c(
+  "HIV\nopportunistic infections",
+  "Severe\nmalaria",
+  "Preterm\ndelivery",
+  "Primary\nCVD prevention",
+  "Acute Asthma"
+)
+
+coverage_breaks <- c(0, 0.2, 0.4, 0.6, 0.8, 1.0001)
+coverage_labels <- c("0–19%", "20–39%", "40–59%", "60–79%", "80–100%")
+color_palette_cb<- c(
+  "0–19%"   = "#FFA07A",
+  "20–39%"  = "#E6D5B8",
+  "40–59%"  = "#FFFFB3",
+  "60–79%"  = "#66CDAA",
+  "80–100%" = "#CC79A7")
+
+maps_list <- list()
+
+# Ensure district names match
+all_results_merged_rch <- all_results_merged_rch %>%
+  mutate(ADM2_EN = tolower(trimws(ADM2_EN)))
+districts <- districts %>%
+  mutate(ADM2_EN = tolower(trimws(ADM2_EN)))
+
+for (i in seq_along(selected_L2_values_2)) {
+  l2_val <- selected_L2_values_2[i]
+  title_text <- custom_titles[i]
+  
+  # Prepare data
+  coverage_data <- districts %>%
+    left_join(
+      all_results_merged_rch %>% filter(L2 == l2_val),
+      by = "ADM2_EN"
+    ) %>%
+    mutate(
+      Proportion_Covered = as.numeric(Proportion_Covered),
+      Proportion_Covered = ifelse(Proportion_Covered < 0 | Proportion_Covered > 1, NA, Proportion_Covered),
+      Coverage_Category = cut(Proportion_Covered, breaks = coverage_breaks, labels = coverage_labels, include.lowest = TRUE),
+      Coverage_Category = factor(Coverage_Category, levels = coverage_labels)
+    )
+
+  # Generate plot
+  p <- ggplot(coverage_data) +
+    geom_sf(aes(fill = Coverage_Category), color = "white", size = 0.2) +
+    scale_fill_manual(values = coverage_colors, drop = FALSE, na.translate = FALSE) +
+    labs(title = title_text) +
+    theme_void() +
+    theme(
+      plot.title = element_text(size = 12, hjust = 0.5, face = "bold"),
+      legend.position = "none"
+    )
+  
+  maps_list[[i]] <- p
+  
+
+}
+
+
+# Step 6: Shared Legend for RCH maps
+dummy_rch <- data.frame(Coverage_Category = factor(coverage_labels, levels = coverage_labels), y = 1)
+
+legend_plot_rch <- ggplot(dummy_rch) +
+  geom_bar(aes(x = Coverage_Category, y = y, fill = Coverage_Category), stat = "identity") +
+  scale_fill_manual(values = coverage_colors, name = "Coverage") +
+  theme_void() +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10)
+  )
+
+shared_legend_rch <- cowplot::get_legend(legend_plot_rch)
+
+# Step 7: Assemble final plot
+combined_map_rch <- patchwork::wrap_plots(maps_list, ncol = 5) &
+  theme(legend.position = "none")
+
+final_plot_rch <- cowplot::plot_grid(
+  combined_map_rch,
+  shared_legend_rch,
+  ncol = 1,
+  rel_heights = c(0.9, 0.1)
+)
+
+# Step 8: Save
+dir.create("output_maps", showWarnings = FALSE)
+
+ggsave(
+  "output_maps/RCH_Coverage_5_Map_Comparison.tiff",
+  plot = final_plot_rch,
+  width = 30,
+  height = 8,
+  dpi = 300
+)
+
+cat("✅ RCH 5-map coverage figure saved.\n")
+
+
+
+```
+
+
+```{r}
+
+
+# Step 1: Combine both sets of maps
+combined_maps <- c(MAPS, maps_list)
+
+# Step 2: Shared legend (reusing the same color bins)
+legend_data <- data.frame(Coverage_Category = factor(coverage_labels, levels = coverage_labels), y = 1)
+
+legend_plot <- ggplot(legend_data) +
+  geom_bar(aes(x = Coverage_Category, y = y, fill = Coverage_Category), stat = "identity") +
+  scale_fill_manual(values = coverage_colors, name = "Coverage") +
+  theme_void() +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(size = 12),
+    legend.text = element_text(size = 10)
+  )
+
+shared_legend <- cowplot::get_legend(legend_plot)
+
+# Step 3: Arrange all 10 maps in 2 rows of 5
+combined_grid <- patchwork::wrap_plots(combined_maps, ncol = 5) &
+  theme(legend.position = "none")
+
+# Step 4: Add shared legend below all maps
+final_combined_plot <- cowplot::plot_grid(
+  combined_grid,
+  shared_legend,
+  ncol = 1,
+  rel_heights = c(0.92, 0.08)
+)
+
+# Step 5: Save output
+ggsave("output_maps/PHC_RCH_Combined_Coverage_10_Map.tiff", plot = final_combined_plot, width = 30, height = 14, dpi = 300)
+
+cat("✅ Combined PHC + RCH 10-map coverage figure saved.\n")
+
+
+```
+
+
+
+
+```{r}
+
+
+# Define a consistent tight theme for all maps
+fix_map <- function(p) {
+  p +
+    coord_sf(datum = NA) +  # Ensures proper sf alignment
+    theme_void() +
+    theme(
+      plot.title = element_text(size = 10, hjust = 0.5),
+      plot.margin = margin(1, 5, 1, 5),  # Tight margins all around
+      legend.position = "none"
+    )
+}
+
+# Apply theme to all maps
+MAPS_fixed <- lapply(MAPS, fix_map)
+maps_list_fixed <- lapply(maps_list, fix_map)
+
+# Wrap first and second rows
+row1 <- wrap_plots(MAPS_fixed, ncol = 5)
+row2 <- wrap_plots(maps_list_fixed, ncol = 5)
+
+# Titles as draw_text objects
+title_HC <- ggdraw() + draw_label("Basic primary healthcare", fontface = "bold", size = 14, hjust = 0.5)
+title_RCH <- ggdraw() + draw_label("Enhanced primary healthcare", fontface = "bold", size = 14, hjust = 0.5)
+
+# Legend
+legend_plot <- ggplot(data.frame(
+  Coverage_Category = factor(coverage_labels, levels = coverage_labels),
+  y = 1
+)) +
+  geom_bar(aes(x = Coverage_Category, y = y, fill = Coverage_Category), stat = "identity") +
+  scale_fill_manual(values = coverage_colors, name = "Proportion Ready") +
+  theme_void() +
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(size = 11),
+    legend.text = element_text(size = 9),
+    legend.key.height = unit(0.3, "cm"),
+    legend.spacing.x = unit(0.2, "cm")
+  )
+
+shared_legend <- get_legend(legend_plot)
+
+# Combine with patchwork
+final_plot <- (
+  wrap_elements(title_HC) / 
+  row1 / 
+  plot_spacer() /  # Just insert the spacer here
+  wrap_elements(title_RCH) / 
+  row2 / 
+  wrap_elements(shared_legend)
+) + 
+  plot_layout(heights = c(0.06, 1, 0.01, 0.06, 1, 0.12))
+
+# Save the output
+ggsave(
+  filename = "output_maps/PHC_RCH_TightGrid_Final.tiff",
+  plot = final_plot,
+  width = 7,  # reduced from 14
+  height = 7.3,
+  dpi = 300,
+  bg = "white"
+)
+
+cat("✅ Final ultra-compact layout saved as 'output_maps/PHC_RCH_TightGrid_Final.tiff'\n")
+
+```
+
+
+

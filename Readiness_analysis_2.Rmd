@@ -1,0 +1,966 @@
+---
+title: "Readiness_analysis_2"
+output: html_document
+date: "2024-10-23"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+library(tidyverse)
+library(questionr)
+#library(kableExtra)
+#library(sf)
+library(ggplot2)
+library(dplyr)
+#library(gridExtra) 
+library(stringr)
+library(purrr)
+library(tidyr)
+library(tidytext)
+
+```
+
+```{r}
+setwd("C:/Users/sally/OneDrive/Desktop/uw academic/Thesis/malawi Survey/Indicators")
+
+```
+
+```{r}
+
+
+
+df_2<-read.csv("SARA_seleced_managed_11_19.csv")|> as_tibble()
+
+
+df_2 <- df_2 %>%
+  mutate(across(everything(), ~ ifelse(is.na(.) | . == "", "t_na", .)))
+
+unique(df_2$bipolar_m)
+
+df_2 %>% count(bipolar_m)
+
+data<-read.csv("new taxonomy/short files for R 2/PHC_5km.csv")
+
+
+data <- data %>%
+  mutate(dcp_4_id = paste0(str_to_upper(str_sub(Group, 1, 3)), 
+                           "_", row_number()))
+
+
+#df_2 <- df_2 %>%
+ # rename_with(~ toupper(.), tail(names(df_2), 80))
+
+
+df_2 <- df_2 %>%
+  dplyr::select(-c(1515, 1516)) 
+
+df_2 <- df_2 %>%
+  rename_with(~ toupper(.))  
+
+# Check if the last 80 columns are renamed correctly
+names(df_2)[(ncol(df_2) - 79):ncol(df_2)]  # Show the names of the last 80 columns
+
+
+
+
+
+
+```
+
+
+
+
+
+
+```{r}
+
+# subset the columns 
+col_select <- data %>% 
+    dplyr::select(!c(starts_with("X"),no.information:IA.max.J.H.AJ,Group:L4))
+# select columns for further subsetting 
+cols <- names(col_select)#[-c(48:50)] # check the numbers with col_selcet 
+
+# create a dataframe with the lists of columns to keep for each service id 
+col_ls <- col_select %>%
+    dplyr::select(all_of(cols)) %>%
+  # change all vars except for the ID to character and NAs to blank spaces 
+  mutate(across(!contains("dcp.4.id"),
+                ~ if_else(is.na(as.character(.)), 
+                          "", 
+                          as.character(.)))) %>%
+  # 'unite' the columns (merge them into a single character string) 
+  unite("cols", !contains("dcp_4_id"), sep = " ") %>%
+  # remove excessive whitespace 
+  mutate(cols = str_squish(cols)) %>% # take any extra spaces except one space created by the ubove chunk
+  # pivot so each word is in a row (using the tidytext function) 
+  tidytext::unnest_tokens(cols, cols) %>%
+  group_by(dcp_4_id) %>%
+  # for each group list the columns 
+  summarize(cols = list(cols)) |>
+  # convert them back to uppercase (the tidytext function converts to lower) 
+  mutate(cols = map(cols, str_to_upper))
+
+# now create the combined data frame 
+combined <- expand.grid(Service_id = unique(data$dcp_4_id),
+                        # health facilities 
+                        FNAME = unique(df_2$FNAME)) |> 
+  # arrange the table according to health services 
+  arrange(Service_id) |> 
+  left_join(df_2) |> 
+  as_tibble() %>% 
+  mutate(Service_id = as.character(Service_id)) %>% 
+  filter(Service_id %in% col_ls$dcp_4_id)# try with or without and see what happen it is safe
+
+# split it up according to the service id into multiple df
+combined_split <- split(combined, combined$Service_id)
+
+setdiff(names(combined_split), col_ls$dcp_4_id)# test if IDs match
+
+# then select the appropriate columns for each service ID 
+final_data <- map2(combined_split, 
+                   col_ls$cols,
+                   \(x,y) x |>   dplyr::select(1:2, all_of(y))) |>
+  # bind the dataframe back together 
+  bind_rows()
+
+#final_data <- final_data %>% 
+  #mutate(B104 = as.character(B104),
+         #across(everything(),~case_when(is.na(.)~"not_app",
+                   #                     .==""~NA_character_,
+                                       # TRUE~.)) %>% 
+  #filter(!is.na(Service_id))
+
+final_data <- final_data %>% 
+        mutate(across(everything(),
+                      ~case_when(is.na(.)~"not_app",
+                                 .==""~NA_character_,
+                                 TRUE ~ as.character(.)))) %>% 
+  filter(!is.na(Service_id))
+
+
+
+#write.csv(final_data, "SARA_indicator_merged_11_1.csv", row.names = FALSE)
+
+```
+
+
+
+
+
+
+
+```{r eval=FALSE, include=FALSE}
+
+
+
+value_fun <- function(x){
+  case_when(x=="No"~0,
+            x=="No."~0,
+            x=="NEVER AVAILABLE"~9,
+            x=="not_app"~1,
+            x=="Yes"~1,
+            x=="yes"~1,
+            x=="Yes, observed."~1,
+            x=="NOT AVAILABLE TODAY"~0,
+            x=="Yes but not observed"~2,#agree on how to code it is 1 or 2 
+            x=="Yes but not observed."~2,
+            x=="REPORTED  AVAILABLE BUT NOT SEEN"~2,
+x=="AVAILABLE  AND  FUNCTIONAL"~1,
+x== "Available and functional"~1,
+x=="AVAILABLE  NOT  FUNCTIONAL"~2,
+x=="Available and functional"~1,
+x=="AVAILABLE DON'T KNOW IF  FUNCTIONAL"~2,
+x=="1"~1,
+x=="0"~0,
+x=="AVAILABLE, OBSERVED"  ~1,
+                             x=="AT LEAST ONE VALID"~1,
+                             x=="AVAILABLE NON VALID"~2,
+                             x=="3"~8, #agree on how to code
+                             x=="REPORTED AVAILABLE BUT NOT SEEN"~2,# how to address specially with things that does not expire or stop working like male and female condoms.
+                             x=="DO NOT CONDUCT THE TEST"~0,
+                             x=="NOT AVAILABLE"~0,
+x=="Not available" ~0,
+                             x=="YES, ONSITE"~1,
+                             x=="AVAILABLE AND FUNCTIONAL"~1,
+                             x=="YES, OFFSITE"~1,# agree on how to interpret
+                             x=="AVAILABLE DON'T KNOW IF FUNCTIONAL"~2,
+                             x=="AVAILABLE NOT FUNCTIONAL"~2,
+x=="Available not functional"~2,
+                             x=="Yes, observed"~1,
+                             x=="Yes, not observed"~2,# how to address note this guidelines
+x=="AVAILABLE, NOT OBSERVED"~2,
+x=="Not observed"~2,
+                             x=="No, not available"~0,
+                             x=="No, not functioning"~0,
+                             x=="DON?? CONDUCT THE TEST"~0,
+                             x=="yes"~1,
+                             x=="no"~0, 
+x=="Yes and observed."~1,
+x=="NA"~8,
+x=="t_na"~8,
+
+                             is.na(x)~8)
+}
+
+
+
+```
+
+
+
+
+
+
+
+```{r}
+
+transformed_data <- final_data %>% 
+  pivot_longer(3:ncol(final_data), names_to = "variable", values_to = "original_value") %>% 
+  mutate(transformed_value = value_fun(original_value))
+
+# View the transformed data to verify the function is working correctly
+print(transformed_data)
+
+
+Readines<-final_data %>% 
+  pivot_longer(3:ncol(final_data),names_to = "variable",
+             values_to = "value") %>% 
+  mutate(value=value_fun(value)) %>% 
+  group_by(Service_id, FNAME) %>% 
+  summarize(max_value = max(value),
+            min_value = min(value)) %>% 
+  ungroup() %>% 
+  mutate(SR= ifelse(max_value ==1 & min_value ==1, "T", "F"))
+
+# test to find missing values 
+final_data %>% 
+  # change according to dimensions 
+  pivot_longer(3:ncol(final_data),names_to = "variable",
+             values_to = "original_value") %>% 
+  mutate(new_value=value_fun(original_value)) %>% 
+  distinct(new_value, original_value) 
+  
+Readines %>% count(SR)
+
+
+
+
+
+```
+
+
+
+
+
+
+```{r}
+select_col<-9+ncol(final_data)
+
+#Merged with data in numeric
+data_readiness<-left_join(Readines,
+                        data %>% 
+                            dplyr::select(1:7,32,34:37) %>% # to add l1-l4 and skip level
+                       rename(Service_id=dcp_4_id) %>% 
+                          distinct()) %>% 
+  left_join(final_data %>% 
+              mutate(across(3:ncol(final_data),~value_fun(.)))) %>% 
+  left_join(df_2 %>% 
+                dplyr::select(4,9,11,12,16,22:25)) %>% 
+    dplyr::select(1,6:select_col,3:5,2,11,12, ZONENAME:A109__ACCURACY)
+                       
+
+# Remove columns 11 to 129 from data_readiness
+data_readiness <- data_readiness %>%
+    dplyr::select(-c(13:116))
+
+# Confirm the remaining columns
+names(data_readiness)
+
+
+#write.csv(data_readiness, "FR_PHC_5km_12_16.csv", row.names = FALSE)
+
+
+data_readiness %>% count(SR)
+
+View(data_readiness)
+
+```
+
+
+
+
+
+```{r}
+# Convert SR to numeric, treating "T" as 1, "F" as 0, and leaving NA as NA
+data_readiness <- data_readiness %>%
+  mutate(SR = case_when(
+    SR == "T" ~ 1,
+    SR == "F" ~ 0,
+    TRUE ~ as.numeric(NA)  # Keep existing NAs
+  ))
+
+
+
+readiness_summary_1 <- data_readiness %>%
+  group_by(Service_id) %>%
+  mutate(
+    proportion_ready = sum(SR == 1, na.rm = TRUE) / nrow(df_2)  
+  ) %>%
+  distinct(Service_id, .keep_all = TRUE) %>%
+  ungroup()
+
+
+# Check the resulting unique proportions
+
+readiness_summary_1 <- readiness_summary_1[, -c(9:22)]
+
+
+
+readiness_summary_2 <- data_readiness %>%
+  group_by(Service_id) %>%
+  mutate(
+    proportion_ready = sum(SR == 1, na.rm = TRUE) / n()  
+  ) %>%
+  distinct(Service_id, .keep_all = TRUE) %>%
+  ungroup()
+
+
+#write.csv(readiness_summary_1, "readiness_summary_1.csv", row.names = FALSE)
+
+```
+
+
+
+
+# readiness analaysis Hospitals
+```{r}
+
+
+
+df_2<-read.csv("SARA_seleced_managed_11_19.csv")|> as_tibble()
+
+unique(df_2$Ftype_analysis)
+
+ 
+ 
+ df_2 <- df_2 %>%
+  filter(Ftype %in% c("District Hospital", "Central Hospital","Rural/Community Hospital"))
+
+
+df_2 <- df_2 %>%
+  mutate(across(everything(), ~ ifelse(is.na(.) | . == "", "t_na", .)))
+
+unique(df_2$bipolar_m)
+
+df_2 %>% count(bipolar_m)
+
+data<-read.csv("new taxonomy/short files for R 2/RCH_10km.csv")
+
+
+data <- data %>%
+  mutate(dcp_4_id = paste0(str_to_upper(str_sub(Group, 1, 3)), 
+                           "_", row_number()))
+
+
+#df_2 <- df_2 %>%
+ # rename_with(~ toupper(.), tail(names(df_2), 80))
+
+
+df_2 <- df_2 %>%
+  dplyr::select(-c(1515, 1516)) 
+
+df_2 <- df_2 %>%
+  rename_with(~ toupper(.))  
+
+
+
+
+
+```
+
+
+
+
+
+
+```{r}
+
+# subset the columns 
+col_select <- data %>% 
+  dplyr::select(!c(starts_with("X"),no.information:IA.max,Group:L4))
+# select columns for further subsetting 
+cols <- names(col_select)#[-c(48:50)] # check the numbers with col_selcet 
+
+# create a dataframe with the lists of columns to keep for each service id 
+col_ls <- col_select %>%
+  dplyr::select(all_of(cols)) %>%
+  # change all vars except for the ID to character and NAs to blank spaces 
+  mutate(across(!contains("dcp.4.id"),
+                ~ if_else(is.na(as.character(.)), 
+                          "", 
+                          as.character(.)))) %>%
+  # 'unite' the columns (merge them into a single character string) 
+  unite("cols", !contains("dcp_4_id"), sep = " ") %>%
+  # remove excessive whitespace 
+  mutate(cols = str_squish(cols)) %>% # take any extra spaces except one space created by the ubove chunk
+  # pivot so each word is in a row (using the tidytext function) 
+  tidytext::unnest_tokens(cols, cols) %>%
+  group_by(dcp_4_id) %>%
+  # for each group list the columns 
+  summarize(cols = list(cols)) |>
+  # convert them back to uppercase (the tidytext function converts to lower) 
+  mutate(cols = map(cols, str_to_upper))
+
+# now create the combined data frame 
+combined <- expand.grid(Service_id = unique(data$dcp_4_id),
+                        # health facilities 
+                        FNAME = unique(df_2$FNAME)) |> 
+  # arrange the table according to health services 
+  arrange(Service_id) |> 
+  left_join(df_2) |> 
+  as_tibble() %>% 
+  mutate(Service_id = as.character(Service_id)) %>% 
+  filter(Service_id %in% col_ls$dcp_4_id)# try with or without and see what happen it is safe
+
+# split it up according to the service id into multiple df
+combined_split <- split(combined, combined$Service_id)
+
+setdiff(names(combined_split), col_ls$dcp_4_id)# test if IDs match
+
+# then select the appropriate columns for each service ID 
+final_data <- map2(combined_split, 
+                   col_ls$cols,
+                   \(x,y) x |> dplyr::select(1:2, all_of(y))) |>
+  # bind the dataframe back together 
+  bind_rows()
+
+#final_data <- final_data %>% 
+  #mutate(B104 = as.character(B104),
+         #across(everything(),~case_when(is.na(.)~"not_app",
+                   #                     .==""~NA_character_,
+                                       # TRUE~.)) %>% 
+  #filter(!is.na(Service_id))
+
+final_data <- final_data %>% 
+        mutate(across(everything(),
+                      ~case_when(is.na(.)~"not_app",
+                                 .==""~NA_character_,
+                                 TRUE ~ as.character(.)))) %>% 
+  filter(!is.na(Service_id))
+
+
+
+#write.csv(final_data, "SARA_indicator_merged_11_1.csv", row.names = FALSE)
+
+```
+
+
+
+
+```{r eval=FALSE, include=FALSE}
+
+
+
+value_fun <- function(x){
+  case_when(x=="No"~0,
+            x=="No."~0,
+            x=="NEVER AVAILABLE"~9,
+            x=="not_app"~1,
+            x=="Yes"~1,
+            x=="yes"~1,
+            x=="Yes, observed."~1,
+            x=="NOT AVAILABLE TODAY"~0,
+            x=="Yes but not observed"~2,#agree on how to code it is 1 or 2 
+            x=="Yes but not observed."~2,
+            x=="REPORTED  AVAILABLE BUT NOT SEEN"~2,
+x=="AVAILABLE  AND  FUNCTIONAL"~1,
+x== "Available and functional"~1,
+x=="AVAILABLE  NOT  FUNCTIONAL"~2,
+x=="Available and functional"~1,
+x=="AVAILABLE DON'T KNOW IF  FUNCTIONAL"~2,
+x=="1"~1,
+x=="0"~0,
+x=="AVAILABLE, OBSERVED"  ~1,
+                             x=="AT LEAST ONE VALID"~1,
+                             x=="AVAILABLE NON VALID"~2,
+                             x=="3"~8, #agree on how to code
+                             x=="REPORTED AVAILABLE BUT NOT SEEN"~2,# how to address specially with things that does not expire or stop working like male and female condoms.
+                             x=="DO NOT CONDUCT THE TEST"~0,
+                             x=="NOT AVAILABLE"~0,
+x=="Not available" ~0,
+                             x=="YES, ONSITE"~1,
+                             x=="AVAILABLE AND FUNCTIONAL"~1,
+                             x=="YES, OFFSITE"~1,# agree on how to interpret
+                             x=="AVAILABLE DON'T KNOW IF FUNCTIONAL"~2,
+                             x=="AVAILABLE NOT FUNCTIONAL"~2,
+x=="Available not functional"~2,
+                             x=="Yes, observed"~1,
+                             x=="Yes, not observed"~2,# how to address note this guidelines
+x=="AVAILABLE, NOT OBSERVED"~2,
+x=="Not observed"~2,
+                             x=="No, not available"~0,
+                             x=="No, not functioning"~0,
+                             x=="DON?? CONDUCT THE TEST"~0,
+                             x=="yes"~1,
+                             x=="no"~0, 
+x=="Yes and observed."~1,
+x=="NA"~8,
+x=="t_na"~8,
+
+                             is.na(x)~8)
+}
+
+
+
+```
+
+
+
+
+```{r}
+
+transformed_data <- final_data %>% 
+  pivot_longer(3:ncol(final_data), names_to = "variable", values_to = "original_value") %>% 
+  mutate(transformed_value = value_fun(original_value))
+
+# View the transformed data to verify the function is working correctly
+print(transformed_data)
+
+
+Readines<-final_data %>% 
+  pivot_longer(3:ncol(final_data),names_to = "variable",
+             values_to = "value") %>% 
+  mutate(value=value_fun(value)) %>% 
+  group_by(Service_id, FNAME) %>% 
+  summarize(max_value = max(value),
+            min_value = min(value)) %>% 
+  ungroup() %>% 
+  mutate(SR= ifelse(max_value ==1 & min_value ==1, "T", "F"))
+
+# test to find missing values 
+final_data %>% 
+  # change according to dimensions 
+  pivot_longer(3:ncol(final_data),names_to = "variable",
+             values_to = "original_value") %>% 
+  mutate(new_value=value_fun(original_value)) %>% 
+  distinct(new_value, original_value) 
+  
+Readines %>% count(SR)
+
+
+
+
+
+```
+
+
+
+
+```{r}
+select_col<-9+ncol(final_data)
+
+#Merged with data in numeric
+data_readiness_hospitals_10km<-left_join(Readines,
+                        data %>% 
+                          dplyr::select(1:7,32,34:37) %>% # to add l1-l4 and skip level
+                       rename(Service_id=dcp_4_id) %>% 
+                          distinct()) %>% 
+  left_join(final_data %>% 
+              mutate(across(3:ncol(final_data),~value_fun(.)))) %>% 
+  left_join(df_2 %>% 
+              dplyr::select(4,9,11,12,16,22:25)) %>% 
+  dplyr::select(1,6:select_col,3:5,2,11,12, ZONENAME:A109__ACCURACY)
+                       
+
+
+data_readiness_hospitals_10km<- data_readiness_hospitals_10km %>%
+    dplyr::select(-c(13:103))
+
+
+#write.csv(data_readiness_hospitals_10km, "FR_RCH5_10km_12_16.csv", row.names = FALSE)
+
+
+
+
+
+
+
+```
+
+
+
+
+```{r}
+# Convert SR to numeric, treating "T" as 1, "F" as 0, and leaving NA as NA
+ data_readiness_hospitals_10km<- data_readiness_hospitals_10km %>%
+  mutate(SR = case_when(
+    SR == "T" ~ 1,
+    SR == "F" ~ 0,
+    TRUE ~ as.numeric(NA)  # Keep existing NAs
+  ))
+
+
+
+readiness_summary_1_hosp <-  data_readiness_hospitals_10km %>%
+  group_by(Service_id) %>%
+  mutate(
+    proportion_ready = sum(SR == 1, na.rm = TRUE) / nrow(df_2)  
+  ) %>%
+  distinct(Service_id, .keep_all = TRUE) %>%
+  ungroup()
+
+
+readiness_summary_2_hosp <-  data_readiness_hospitals_25km  %>%
+  group_by(Service_id) %>%                                      
+ mutate(propotion_ready = sum(SR == 1, na.rm = TRUE) / n()) %>%  
+distinct(Service_id, .keep_all = TRUE) %>%                     
+  ungroup()
+
+
+
+
+# Check the resulting unique proportions
+
+readiness_summary_1_hosp <- readiness_summary_1_hosp[, -c(11:86)]
+
+
+write.csv(readiness_summary_1_hosp, "readiness_summary_1_hosp.csv", row.names = FALSE)
+
+```
+
+
+
+######################
+
+
+# readiness analaysis STC
+```{r}
+
+
+
+df_2<-read.csv("SARA_seleced_managed_11_19.csv")|> as_tibble()
+
+
+
+df_2 <- df_2 %>%
+  filter(Ftype %in% c("District Hospital", "Central Hospital"))
+
+
+df_2 <- df_2 %>%
+  mutate(across(everything(), ~ ifelse(is.na(.) | . == "", "t_na", .)))
+
+unique(df_2$bipolar_m)
+
+df_2 %>% count(bipolar_m)
+
+data<-read.csv("new taxonomy/short files for R 2/STC_25km.csv")
+
+
+data <- data %>%
+  mutate(dcp_4_id = paste0(str_to_upper(str_sub(Group, 1, 3)), 
+                           "_", row_number()))
+
+
+#df_2 <- df_2 %>%
+ # rename_with(~ toupper(.), tail(names(df_2), 80))
+
+
+df_2 <- df_2 %>%
+  dplyr::select(-c(1515, 1516)) 
+
+df_2 <- df_2 %>%
+  rename_with(~ toupper(.))  
+
+
+
+
+```
+
+
+
+
+
+
+```{r}
+
+# subset the columns 
+col_select <- data %>% 
+    dplyr::select(!c(starts_with("X"),no.information:IA.max,Group:L4))
+# select columns for further subsetting 
+cols <- names(col_select)#[-c(48:50)] # check the numbers with col_selcet 
+
+# create a dataframe with the lists of columns to keep for each service id 
+col_ls <- col_select %>%
+    dplyr::select(all_of(cols)) %>%
+  # change all vars except for the ID to character and NAs to blank spaces 
+  mutate(across(!contains("dcp.4.id"),
+                ~ if_else(is.na(as.character(.)), 
+                          "", 
+                          as.character(.)))) %>%
+  # 'unite' the columns (merge them into a single character string) 
+  unite("cols", !contains("dcp_4_id"), sep = " ") %>%
+  # remove excessive whitespace 
+  mutate(cols = str_squish(cols)) %>% # take any extra spaces except one space created by the ubove chunk
+  # pivot so each word is in a row (using the tidytext function) 
+  tidytext::unnest_tokens(cols, cols) %>%
+  group_by(dcp_4_id) %>%
+  # for each group list the columns 
+  summarize(cols = list(cols)) |>
+  # convert them back to uppercase (the tidytext function converts to lower) 
+  mutate(cols = map(cols, str_to_upper))
+
+# now create the combined data frame 
+combined <- expand.grid(Service_id = unique(data$dcp_4_id),
+                        # health facilities 
+                        FNAME = unique(df_2$FNAME)) |> 
+  # arrange the table according to health services 
+  arrange(Service_id) |> 
+  left_join(df_2) |> 
+  as_tibble() %>% 
+  mutate(Service_id = as.character(Service_id)) %>% 
+  filter(Service_id %in% col_ls$dcp_4_id)# try with or without and see what happen it is safe
+
+# split it up according to the service id into multiple df
+combined_split <- split(combined, combined$Service_id)
+
+setdiff(names(combined_split), col_ls$dcp_4_id)# test if IDs match
+
+# then select the appropriate columns for each service ID 
+final_data <- map2(combined_split, 
+                   col_ls$cols,
+                   \(x,y) x |>   dplyr::select(1:2, all_of(y))) |>
+  # bind the dataframe back together 
+  bind_rows()
+
+#final_data <- final_data %>% 
+  #mutate(B104 = as.character(B104),
+         #across(everything(),~case_when(is.na(.)~"not_app",
+                   #                     .==""~NA_character_,
+                                       # TRUE~.)) %>% 
+  #filter(!is.na(Service_id))
+
+final_data <- final_data %>% 
+        mutate(across(everything(),
+                      ~case_when(is.na(.)~"not_app",
+                                 .==""~NA_character_,
+                                 TRUE ~ as.character(.)))) %>% 
+  filter(!is.na(Service_id))
+
+
+
+#write.csv(final_data, "SARA_indicator_merged_11_1.csv", row.names = FALSE)
+
+```
+
+
+
+
+```{r eval=FALSE, include=FALSE}
+
+
+
+value_fun <- function(x){
+  case_when(x=="No"~0,
+            x=="No."~0,
+            x=="NEVER AVAILABLE"~9,
+            x=="not_app"~1,
+            x=="Yes"~1,
+            x=="yes"~1,
+            x=="Yes, observed."~1,
+            x=="NOT AVAILABLE TODAY"~0,
+            x=="Yes but not observed"~2,#agree on how to code it is 1 or 2 
+            x=="Yes but not observed."~2,
+            x=="REPORTED  AVAILABLE BUT NOT SEEN"~2,
+x=="AVAILABLE  AND  FUNCTIONAL"~1,
+x== "Available and functional"~1,
+x=="AVAILABLE  NOT  FUNCTIONAL"~2,
+x=="Available and functional"~1,
+x=="AVAILABLE DON'T KNOW IF  FUNCTIONAL"~2,
+x=="1"~1,
+x=="0"~0,
+x=="AVAILABLE, OBSERVED"  ~1,
+                             x=="AT LEAST ONE VALID"~1,
+                             x=="AVAILABLE NON VALID"~2,
+                             x=="3"~8, #agree on how to code
+                             x=="REPORTED AVAILABLE BUT NOT SEEN"~2,# how to address specially with things that does not expire or stop working like male and female condoms.
+                             x=="DO NOT CONDUCT THE TEST"~0,
+                             x=="NOT AVAILABLE"~0,
+x=="Not available" ~0,
+                             x=="YES, ONSITE"~1,
+                             x=="AVAILABLE AND FUNCTIONAL"~1,
+                             x=="YES, OFFSITE"~1,# agree on how to interpret
+                             x=="AVAILABLE DON'T KNOW IF FUNCTIONAL"~2,
+                             x=="AVAILABLE NOT FUNCTIONAL"~2,
+x=="Available not functional"~2,
+                             x=="Yes, observed"~1,
+                             x=="Yes, not observed"~2,# how to address note this guidelines
+x=="AVAILABLE, NOT OBSERVED"~2,
+x=="Not observed"~2,
+                             x=="No, not available"~0,
+                             x=="No, not functioning"~0,
+                             x=="DON?? CONDUCT THE TEST"~0,
+                             x=="yes"~1,
+                             x=="no"~0, 
+x=="Yes and observed."~1,
+x=="NA"~8,
+x=="t_na"~8,
+
+                             is.na(x)~8)
+}
+
+
+
+```
+
+
+
+
+```{r}
+
+transformed_data <- final_data %>% 
+  pivot_longer(3:ncol(final_data), names_to = "variable", values_to = "original_value") %>% 
+  mutate(transformed_value = value_fun(original_value))
+
+# View the transformed data to verify the function is working correctly
+print(transformed_data)
+
+
+Readines<-final_data %>% 
+  pivot_longer(3:ncol(final_data),names_to = "variable",
+             values_to = "value") %>% 
+  mutate(value=value_fun(value)) %>% 
+  group_by(Service_id, FNAME) %>% 
+  summarize(max_value = max(value),
+            min_value = min(value)) %>% 
+  ungroup() %>% 
+  mutate(SR= ifelse(max_value ==1 & min_value ==1, "T", "F"))
+
+# test to find missing values 
+final_data %>% 
+  # change according to dimensions 
+  pivot_longer(3:ncol(final_data),names_to = "variable",
+             values_to = "original_value") %>% 
+  mutate(new_value=value_fun(original_value)) %>% 
+  distinct(new_value, original_value) 
+  
+Readines %>% count(SR)
+
+
+
+
+
+```
+
+
+
+
+```{r}
+select_col<-9+ncol(final_data)
+
+
+
+
+#Merged with data in numeric
+data_readiness_STC_25km<-left_join(Readines,
+                        data %>% 
+                            dplyr::select(1:7,32,34:37) %>% # to add l1-l4 and skip level
+                       rename(Service_id=dcp_4_id) %>% 
+                          distinct()) %>% 
+  left_join(final_data %>% 
+              mutate(across(3:ncol(final_data),~value_fun(.)))) %>% 
+  left_join(df_2 %>% 
+                dplyr::select(4,9,11,12,16,22:25)) %>% 
+    dplyr::select(1,6:select_col,3:5,2,11,12, ZONENAME:A109__ACCURACY)
+                       
+
+
+data_readiness_STC_25km<- data_readiness_STC_25km%>%
+    dplyr::select(-c(13:50))
+
+
+write.csv(data_readiness_STC_25km, "FR_STC_25km_12_16.csv", row.names = FALSE)
+
+
+
+
+
+
+
+```
+```{r}
+# Dynamically calculate the range for column selection
+select_col <- 9 + ncol(final_data)
+
+# Merge the data frames and process the data
+data_readiness_STC_25km <- left_join(Readines,
+                                     data %>% 
+                                       dplyr::select(1:7, 32, 34:37) %>%  # Select specific columns
+                                       rename(Service_id = dcp_4_id) %>% 
+                                       distinct()) %>%
+  left_join(final_data %>% 
+              mutate(across(3:ncol(final_data), ~ value_fun(.)))) %>%  # Apply transformations
+  left_join(df_2 %>% 
+              dplyr::select(4, 9, 11, 12, 16, 22:25)) %>%  # Select specific columns from df_2
+  dplyr::select(1, 6:select_col, 3:5, 2, 11, 12, ZONENAME:A109__ACCURACY) %>%  # Arrange columns in order
+  dplyr::select(-c(11:55))  # Remove unnecessary columns
+
+# Export the processed data to a CSV file
+write.csv(data_readiness_STC_25km, "FR_STC_25km_12_9.csv", row.names = FALSE)
+
+```
+
+
+
+
+```{r}
+# Convert SR to numeric, treating "T" as 1, "F" as 0, and leaving NA as NA
+ data_readiness_hospitals_25km <- data_readiness_STC_25km %>%
+  mutate(SR = case_when(
+    SR == "T" ~ 1,
+    SR == "F" ~ 0,
+    TRUE ~ as.numeric(NA)  # Keep existing NAs
+  ))
+
+
+
+readiness_summary_1_hosp <-  data_readiness_hospitals_25km  %>%
+  group_by(Service_id) %>%
+  mutate(
+    proportion_ready = sum(SR == 1, na.rm = TRUE) / nrow(df_2)  
+  ) %>%
+  distinct(Service_id, .keep_all = TRUE) %>%
+  ungroup()
+
+
+readiness_summary_2_hosp <-  data_readiness_hospitals_25km  %>%
+  group_by(Service_id) %>%                                      
+ mutate(propotion_ready = sum(SR == 1, na.rm = TRUE) / n()) %>%  
+distinct(Service_id, .keep_all = TRUE) %>%                     
+  ungroup()
+
+
+
+
+# Check the resulting unique proportions
+
+readiness_summary_1_hosp <- readiness_summary_1_hosp[, -c(11:86)]
+
+
+write.csv(readiness_summary_1_hosp, "readiness_summary_1_hosp.csv", row.names = FALSE)
+
+```
+
+
+
+
+
+
+
+

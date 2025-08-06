@@ -1,0 +1,1249 @@
+---
+title: "cascades"
+output: html_document
+date: "2024-11-08"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+
+library(tidyverse)
+library(questionr)
+library(kableExtra)
+library(sf)
+library(ggplot2)
+library(dplyr)
+library(gridExtra) 
+library(stringr)
+library(readxl)
+
+
+```
+
+```{r}
+setwd("C:/Users/sally/OneDrive/Desktop/uw academic/Thesis/malawi Survey/Indicators")
+
+```
+
+
+
+
+```{r}
+indicators <- read.csv("new taxonomy/short files for R 2/cascades/PHC_5km.csv") %>%
+  as_tibble()
+
+
+df_2<-read.csv("SARA_seleced_managed_11_19.csv")|> as_tibble()
+
+
+
+df_2 <- df_2 %>%
+  mutate(INFRASTRUCTURE = ifelse(INFRASTRUCTURE == 1, "Yes", "No"))
+
+
+
+df_2 <- df_2 %>%
+  mutate(across(where(is.character), ~ str_trim(.)))
+
+
+df_2 <- df_2 %>%
+  dplyr::select(-c(1515, 1516)) 
+
+```
+
+```{r}
+selected_columns <- indicators %>%
+  select(8:30)
+unique_values_long <- selected_columns %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "Variable",
+    values_to = "Value"
+  ) %>%
+  distinct(Variable, Value) %>%  # Get unique combinations
+  arrange(Variable, Value)       # Optional: Sort for readability
+
+# View the unique values
+print(unique_values_long)
+
+write.csv(unique_values_long, "unique_values_indicators_long.csv", row.names = FALSE)
+
+
+```
+
+
+```{r}
+# Ensure all column names in df_2 are uppercase
+names(df_2) <- str_squish(toupper(names(df_2)))
+
+
+names(indicators) <- str_squish(toupper(names(indicators))) 
+# Ensure all relevant variable names in indicators are uppercase
+
+```
+
+
+
+
+
+```{r}
+
+# Extract the names of columns 8 to 31 from `indicators`
+relevant_vars <- names(indicators)[8:31]
+
+# Print the reordered `relevant_vars` for confirmation
+print(relevant_vars)
+
+
+# Standardize relevant variable values in `indicators` to uppercase
+# Filter relevant_vars to include only those that exist in `indicators`
+relevant_vars <- relevant_vars[relevant_vars %in% names(indicators)]
+
+# Apply `toupper` only to the existing relevant_vars in `indicators`
+indicators <- indicators %>%
+  mutate(across(all_of(relevant_vars), ~ toupper(.)))
+
+
+
+
+
+```
+
+
+```{r eval=FALSE, include=FALSE}
+
+
+
+value_fun <- function(x){
+  case_when(x=="No"~0,
+            x=="No."~0,
+            x=="NEVER AVAILABLE"~9,
+            x=="not_app"~1,
+            x=="Yes"~1,
+            x=="yes"~1,
+            x=="Yes, observed."~1,
+            x=="NOT AVAILABLE TODAY"~0,
+            x=="Yes but not observed"~2,#agree on how to code it is 1 or 2 
+            x=="Yes but not observed."~2,
+            x=="REPORTED  AVAILABLE BUT NOT SEEN"~2,
+x=="AVAILABLE  AND  FUNCTIONAL"~1,
+x== "Available and functional"~1,
+x=="AVAILABLE  NOT  FUNCTIONAL"~2,
+x=="Available and functional"~1,
+x=="AVAILABLE DON'T KNOW IF  FUNCTIONAL"~2,
+x=="1"~1,
+x=="0"~0,
+x=="AVAILABLE, OBSERVED"  ~1,
+                             x=="AT LEAST ONE VALID"~1,
+                             x=="AVAILABLE NON VALID"~2,
+                             x=="3"~8, #agree on how to code
+                             x=="REPORTED AVAILABLE BUT NOT SEEN"~2,# how to address specially with things that does not expire or stop working like male and female condoms.
+                             x=="DO NOT CONDUCT THE TEST"~0,
+                             x=="NOT AVAILABLE"~0,
+x=="Not available" ~0,
+                             x=="YES, ONSITE"~1,
+                             x=="AVAILABLE AND FUNCTIONAL"~1,
+                             x=="YES, OFFSITE"~1,# agree on how to interpret
+                             x=="AVAILABLE DON'T KNOW IF FUNCTIONAL"~2,
+                             x=="AVAILABLE NOT FUNCTIONAL"~2,
+x=="Available not functional"~2,
+                             x=="Yes, observed"~1,
+                             x=="Yes, not observed"~2,# how to address note this guidelines
+x=="AVAILABLE, NOT OBSERVED"~2,
+x=="Not observed"~2,
+                             x=="No, not available"~0,
+                             x=="No, not functioning"~0,
+                             x=="DON?? CONDUCT THE TEST"~0,
+                             x=="yes"~1,
+                             x=="no"~0, 
+x=="Yes and observed."~1,
+x=="NA"~8,
+x=="t_na"~8,
+
+                             is.na(x)~8)
+}
+
+
+
+```
+
+
+
+
+
+
+
+```{r}
+# Initialize a list to store the plots
+output_plots <- list()
+num_rows <- nrow(indicators)
+
+# Loop through each row in the `indicators` dataframe
+for (row_number in 1:num_rows) {
+  # Step 1: Extract relevant variables for the current row
+  test_row <- indicators[row_number, ]
+  variables <- test_row[relevant_vars] %>%
+    unlist() %>%
+    na.omit() %>%
+    as.character()
+  
+  # Step 2: Filter variables to ensure they exist in `df_2`
+  variables <- variables[variables %in% names(df_2)]
+  
+  if (length(variables) == 0) {
+    warning(paste("No valid variables found for row", row_number))
+    next
+  }
+  
+  # Step 3: Generate Composite Variables
+  # Start with Composite_1
+  df_2 <- df_2 %>%
+    mutate(Composite_1 = ifelse(value_fun(.data[[variables[1]]]) == 1, "Yes", "No"))
+  
+  # Generate additional composite variables progressively
+  composite_names <- c(variables[1])  # Keep track of composite names
+  for (i in 2:length(variables)) {
+    composite_vars <- variables[1:i]  # Select the first `i` variables
+    composite_col <- paste0("Composite_", i)
+    composite_names <- c(composite_names, paste("+", variables[i]))  # Add to cumulative name list
+    
+    # Validate that all columns in `composite_vars` exist in `df_2`
+    if (!all(composite_vars %in% names(df_2))) {
+      warning(paste("Invalid composite variables for row", row_number, ":", paste(composite_vars, collapse = ", ")))
+      next
+    }
+    
+    # Generate the composite variable
+    df_2 <- df_2 %>%
+      mutate(!!composite_col := ifelse(
+        rowSums(across(all_of(composite_vars), ~ value_fun(.x), .names = "valid_{col}")) == i,
+        "Yes",
+        "No"
+      ))
+  }
+  
+  # Step 4: Calculate Percentages for Composite Variables
+  composites <- paste0("Composite_", 1:length(variables))
+  
+  # Filter only composites that exist in the dataframe
+  valid_composites <- composites[composites %in% names(df_2)]
+  
+  if (length(valid_composites) == 0) {
+    warning(paste("No valid composites found for row", row_number))
+    next
+  }
+  
+  # Create a dataframe for plotting
+  data_for_plot <- data.frame(
+    Variable = composite_names[1:length(valid_composites)],  # Use cumulative names
+    Percentage = sapply(valid_composites, function(comp) {
+      composite_counts <- df_2 %>%
+        count(!!sym(comp)) %>%
+        #mutate(Percentage = n / nrow(df_2) * 100)  # Use nrow(df_2) to match denominator logic
+        mutate(Percentage = n / sum(complete.cases(df_2)) * 100)
+      yes_percentage <- composite_counts %>%
+        filter(!!sym(comp) == "Yes") %>%
+        pull(Percentage)
+      if (length(yes_percentage) == 0) return(0) else return(yes_percentage)
+    })
+  )
+  
+  # Step 5: Generate the plot
+ 
+  intervention_name <- test_row$L2  # Assuming INTERVENTION column exists
+p <- ggplot(data_for_plot, aes(x = reorder(Variable, -Percentage), y = Percentage, fill = Percentage)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  scale_fill_gradient(low = "#A8DADC", high = "#4B9EA4") +
+  labs(
+    title = paste(intervention_name),
+    x = "",
+    y = ""
+  ) +
+  scale_y_continuous(
+    limits = c(0, 100),          # Set limits from 0 to 100
+    breaks = seq(0, 100, 10)     # Set breaks at intervals of 10
+  )  +
+  theme_classic() +
+  theme(legend.position = "none") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x-axis labels for readability
+
+  # Save the plot
+  output_plots[[row_number]] <- p
+  print(paste("Plot created for row", row_number))
+}
+
+# Step 6: Save or display the plots
+for (i in seq_along(output_plots)) {
+  if (!is.null(output_plots[[i]])) {
+    print(output_plots[[i]])
+  }
+}
+
+```
+
+
+
+
+
+
+```{r}
+# Specify the directory to save the plots
+output_directory <- "output_graphs"
+if (!dir.exists(output_directory)) {
+  dir.create(output_directory)
+}
+
+# Loop through each row in the `indicators` dataframe
+for (row_number in 1:num_rows) {
+  # ... (existing code for generating plots)
+  
+  # Save the plot
+  if (!is.null(output_plots[[row_number]])) {
+    plot_file <- file.path(output_directory, paste0("plot_row_", row_number, ".png"))
+    ggsave(plot_file, plot = output_plots[[row_number]], width = 10, height = 6)
+    print(paste("Plot saved for row", row_number, "at", plot_file))
+  }
+}
+
+```
+
+
+
+
+
+```{r}
+# Load the grid package for grid.newpage and grid.text
+library(grid)
+
+# Create the output directory if it doesn't exist
+if (!dir.exists("output_graphs")) {
+  dir.create("output_graphs")
+}
+
+# Define the PDF output file
+output_pdf <- "output_graphs/all_PHC.pdf"  # Change the filename to all_PHC.pdf
+
+# Open a PDF device
+pdf(output_pdf, width = 10, height = 6)
+
+# Add a title page
+grid.newpage()  # Create a new blank page
+grid.text(
+  "Readiness Cascades (PHC_HC+)",
+  gp = gpar(fontsize = 24, fontface = "bold"),
+  x = 0.5, y = 0.5
+)
+
+# Loop through the plots and add each one to the PDF
+for (i in seq_along(output_plots)) {
+  if (!is.null(output_plots[[i]])) {
+    print(output_plots[[i]])
+  }
+}
+
+# Close the PDF device
+dev.off()
+
+# Confirm process completion
+cat("All plots with a title page have been saved to", output_pdf, "\n")
+
+```
+
+
+
+
+```{r}
+indicators_1 <- read.csv("new taxonomy/short files for R 2/cascades/RCH_10km.csv") %>%
+  as_tibble()
+
+
+
+
+```
+
+
+
+```{r}
+
+
+names(indicators_1) <- str_squish(toupper(names(indicators))) 
+# Ensure all relevant variable names in indicators are uppercase
+
+
+df_2 <- df_2 %>%
+  filter(FTYPE %in% c("District Hospital", "Rural/Community Hospital", "Central Hospital"))
+
+```
+
+
+
+
+
+```{r}
+
+# Extract the names of columns 8 to 31 from `indicators`
+relevant_vars <- names(indicators_1)[8:31]
+
+# Print the reordered `relevant_vars` for confirmation
+print(relevant_vars)
+
+
+# Standardize relevant variable values in `indicators` to uppercase
+# Filter relevant_vars to include only those that exist in `indicators`
+relevant_vars <- relevant_vars[relevant_vars %in% names(indicators_1)]
+
+# Apply `toupper` only to the existing relevant_vars in `indicators`
+indicators_1 <- indicators_1 %>%
+  mutate(across(all_of(relevant_vars), ~ toupper(.)))
+
+
+
+
+
+```
+
+
+```{r eval=FALSE, include=FALSE}
+
+
+
+value_fun <- function(x){
+  case_when(x=="No"~0,
+            x=="No."~0,
+            x=="NEVER AVAILABLE"~9,
+            x=="not_app"~1,
+            x=="Yes"~1,
+            x=="yes"~1,
+            x=="Yes, observed."~1,
+            x=="NOT AVAILABLE TODAY"~0,
+            x=="Yes but not observed"~2,#agree on how to code it is 1 or 2 
+            x=="Yes but not observed."~2,
+            x=="REPORTED  AVAILABLE BUT NOT SEEN"~2,
+x=="AVAILABLE  AND  FUNCTIONAL"~1,
+x== "Available and functional"~1,
+x=="AVAILABLE  NOT  FUNCTIONAL"~2,
+x=="Available and functional"~1,
+x=="AVAILABLE DON'T KNOW IF  FUNCTIONAL"~2,
+x=="1"~1,
+x=="0"~0,
+x=="AVAILABLE, OBSERVED"  ~1,
+                             x=="AT LEAST ONE VALID"~1,
+                             x=="AVAILABLE NON VALID"~2,
+                             x=="3"~8, #agree on how to code
+                             x=="REPORTED AVAILABLE BUT NOT SEEN"~2,# how to address specially with things that does not expire or stop working like male and female condoms.
+                             x=="DO NOT CONDUCT THE TEST"~0,
+                             x=="NOT AVAILABLE"~0,
+x=="Not available" ~0,
+                             x=="YES, ONSITE"~1,
+                             x=="AVAILABLE AND FUNCTIONAL"~1,
+                             x=="YES, OFFSITE"~1,# agree on how to interpret
+                             x=="AVAILABLE DON'T KNOW IF FUNCTIONAL"~2,
+                             x=="AVAILABLE NOT FUNCTIONAL"~2,
+x=="Available not functional"~2,
+                             x=="Yes, observed"~1,
+                             x=="Yes, not observed"~2,# how to address note this guidelines
+x=="AVAILABLE, NOT OBSERVED"~2,
+x=="Not observed"~2,
+                             x=="No, not available"~0,
+                             x=="No, not functioning"~0,
+                             x=="DON?? CONDUCT THE TEST"~0,
+                             x=="yes"~1,
+                             x=="no"~0, 
+x=="Yes and observed."~1,
+x=="NA"~8,
+x=="t_na"~8,
+
+                             is.na(x)~8)
+}
+
+
+
+```
+
+
+
+
+
+
+
+```{r}
+# Initialize a list to store the plots
+output_plots <- list()
+num_rows <- nrow(indicators_1)
+
+# Loop through each row in the `indicators` dataframe
+for (row_number in 1:num_rows) {
+  # Step 1: Extract relevant variables for the current row
+  test_row <- indicators_1[row_number, ]
+  variables <- test_row[relevant_vars] %>%
+    unlist() %>%
+    na.omit() %>%
+    as.character()
+  
+  # Step 2: Filter variables to ensure they exist in `df_2`
+  variables <- variables[variables %in% names(df_2)]
+  
+  if (length(variables) == 0) {
+    warning(paste("No valid variables found for row", row_number))
+    next
+  }
+  
+  # Step 3: Generate Composite Variables
+  # Start with Composite_1
+  df_2 <- df_2 %>%
+    mutate(Composite_1 = ifelse(value_fun(.data[[variables[1]]]) == 1, "Yes", "No"))
+  
+  # Generate additional composite variables progressively
+  composite_names <- c(variables[1])  # Keep track of composite names
+  for (i in 2:length(variables)) {
+    composite_vars <- variables[1:i]  # Select the first `i` variables
+    composite_col <- paste0("Composite_", i)
+    composite_names <- c(composite_names, paste("+", variables[i]))  # Add to cumulative name list
+    
+    # Validate that all columns in `composite_vars` exist in `df_2`
+    if (!all(composite_vars %in% names(df_2))) {
+      warning(paste("Invalid composite variables for row", row_number, ":", paste(composite_vars, collapse = ", ")))
+      next
+    }
+    
+    # Generate the composite variable
+    df_2 <- df_2 %>%
+      mutate(!!composite_col := ifelse(
+        rowSums(across(all_of(composite_vars), ~ value_fun(.x), .names = "valid_{col}")) == i,
+        "Yes",
+        "No"
+      ))
+  }
+  
+  # Step 4: Calculate Percentages for Composite Variables
+  composites <- paste0("Composite_", 1:length(variables))
+  
+  # Filter only composites that exist in the dataframe
+  valid_composites <- composites[composites %in% names(df_2)]
+  
+  if (length(valid_composites) == 0) {
+    warning(paste("No valid composites found for row", row_number))
+    next
+  }
+  
+  # Create a dataframe for plotting
+  data_for_plot <- data.frame(
+    Variable = composite_names[1:length(valid_composites)],  # Use cumulative names
+    Percentage = sapply(valid_composites, function(comp) {
+      composite_counts <- df_2 %>%
+        count(!!sym(comp)) %>%
+        #mutate(Percentage = n / nrow(df_2) * 100)  # Use nrow(df_2) to match denominator logic
+        mutate(Percentage = n / sum(complete.cases(df_2)) * 100)
+      yes_percentage <- composite_counts %>%
+        filter(!!sym(comp) == "Yes") %>%
+        pull(Percentage)
+      if (length(yes_percentage) == 0) return(0) else return(yes_percentage)
+    })
+  )
+  
+  # Step 5: Generate the plot
+ 
+  intervention_name <- test_row$L2  # Assuming INTERVENTION column exists
+p <- ggplot(data_for_plot, aes(x = reorder(Variable, -Percentage), y = Percentage, fill = Percentage)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  scale_fill_gradient(low = "#b0c4de", high = "#4682b4") +
+  labs(
+    title = paste("Readiness Elements -", intervention_name),
+    x = "Readiness elements",
+    y = "Percentage (%)"
+  ) +
+  ylim(0, 100) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x-axis labels for readability
+
+  # Save the plot
+  output_plots[[row_number]] <- p
+  print(paste("Plot created for row", row_number))
+}
+
+# Step 6: Save or display the plots
+for (i in seq_along(output_plots)) {
+  if (!is.null(output_plots[[i]])) {
+    print(output_plots[[i]])
+  }
+}
+
+```
+
+
+
+```{r}
+# Specify the directory to save the plots
+output_directory <- "output_graphs"
+if (!dir.exists(output_directory)) {
+  dir.create(output_directory)
+}
+
+# Loop through each row in the `indicators` dataframe
+for (row_number in 1:num_rows) {
+  # ... (existing code for generating plots)
+  
+  # Save the plot
+  if (!is.null(output_plots[[row_number]])) {
+    plot_file <- file.path(output_directory, paste0("plot_row_", row_number, ".png"))
+    ggsave(plot_file, plot = output_plots[[row_number]], width = 10, height = 6)
+    print(paste("Plot saved for row", row_number, "at", plot_file))
+  }
+}
+
+```
+
+
+
+
+
+```{r}
+
+
+# Create the output directory if it doesn't exist
+if (!dir.exists("output_graphs")) {
+  dir.create("output_graphs")
+}
+
+# Define the PDF output file
+output_pdf <- "output_graphs/RCH_PHC.pdf"  # Change the filename to all_PHC.pdf
+
+# Open a PDF device
+pdf(output_pdf, width = 10, height = 6)
+
+# Add a title page
+grid.newpage()  # Create a new blank page
+grid.text(
+  "Readiness Cascades_RCH+",
+  gp = gpar(fontsize = 24, fontface = "bold"),
+  x = 0.5, y = 0.5
+)
+
+# Loop through the plots and add each one to the PDF
+for (i in seq_along(output_plots)) {
+  if (!is.null(output_plots[[i]])) {
+    print(output_plots[[i]])
+  }
+}
+
+# Close the PDF device
+dev.off()
+
+# Confirm process completion
+cat("All plots with a title page have been saved to", output_pdf, "\n")
+
+```
+
+
+```{r}
+indicators_2 <- read.csv("new taxonomy/short files for R 2/cascades/STC_25km cascades_3.csv") %>%
+  as_tibble()
+
+
+df_2<-read.csv("SARA_seleced_managed_11_19.csv")|> as_tibble()
+
+
+df_2 %>% count(Ftype)
+
+
+
+df_2 <- df_2 %>%
+  mutate(INFRASTRUCTURE = ifelse(INFRASTRUCTURE == 1, "Yes", "No"))
+
+
+
+df_2 <- df_2 %>%
+  mutate(across(where(is.character), ~ str_trim(.)))
+
+
+df_2 <- df_2 %>%
+  dplyr::select(-c(1515, 1516)) 
+
+```
+
+
+
+```{r}
+# Ensure all column names in df_2 are uppercase
+names(df_2) <- str_squish(toupper(names(df_2)))
+
+
+names(indicators_2) <- str_squish(toupper(names(indicators_2))) 
+# Ensure all relevant variable names in indicators are uppercase
+
+
+df_2 <- df_2 %>%
+  filter(FTYPE %in% c("District Hospital", "Central Hospital"))
+
+```
+
+
+
+
+
+```{r}
+
+# Extract the names of columns 8 to 31 from `indicators`
+relevant_vars <- names(indicators_2)[8:31]
+
+# Print the reordered `relevant_vars` for confirmation
+print(relevant_vars)
+
+
+# Standardize relevant variable values in `indicators` to uppercase
+# Filter relevant_vars to include only those that exist in `indicators`
+relevant_vars <- relevant_vars[relevant_vars %in% names(indicators_2)]
+
+# Apply `toupper` only to the existing relevant_vars in `indicators`
+indicators_2 <- indicators_2 %>%
+  mutate(across(all_of(relevant_vars), ~ toupper(.)))
+
+
+
+
+
+```
+
+
+```{r eval=FALSE, include=FALSE}
+
+
+
+value_fun <- function(x){
+  case_when(x=="No"~0,
+            x=="No."~0,
+            x=="NEVER AVAILABLE"~9,
+            x=="not_app"~1,
+            x=="Yes"~1,
+            x=="yes"~1,
+            x=="Yes, observed."~1,
+            x=="NOT AVAILABLE TODAY"~0,
+            x=="Yes but not observed"~2,#agree on how to code it is 1 or 2 
+            x=="Yes but not observed."~2,
+            x=="REPORTED  AVAILABLE BUT NOT SEEN"~2,
+x=="AVAILABLE  AND  FUNCTIONAL"~1,
+x== "Available and functional"~1,
+x=="AVAILABLE  NOT  FUNCTIONAL"~2,
+x=="Available and functional"~1,
+x=="AVAILABLE DON'T KNOW IF  FUNCTIONAL"~2,
+x=="1"~1,
+x=="0"~0,
+x=="AVAILABLE, OBSERVED"  ~1,
+                             x=="AT LEAST ONE VALID"~1,
+                             x=="AVAILABLE NON VALID"~2,
+                             x=="3"~8, #agree on how to code
+                             x=="REPORTED AVAILABLE BUT NOT SEEN"~2,# how to address specially with things that does not expire or stop working like male and female condoms.
+                             x=="DO NOT CONDUCT THE TEST"~0,
+                             x=="NOT AVAILABLE"~0,
+x=="Not available" ~0,
+                             x=="YES, ONSITE"~1,
+                             x=="AVAILABLE AND FUNCTIONAL"~1,
+                             x=="YES, OFFSITE"~1,# agree on how to interpret
+                             x=="AVAILABLE DON'T KNOW IF FUNCTIONAL"~2,
+                             x=="AVAILABLE NOT FUNCTIONAL"~2,
+x=="Available not functional"~2,
+                             x=="Yes, observed"~1,
+                             x=="Yes, not observed"~2,# how to address note this guidelines
+x=="AVAILABLE, NOT OBSERVED"~2,
+x=="Not observed"~2,
+                             x=="No, not available"~0,
+                             x=="No, not functioning"~0,
+                             x=="DON?? CONDUCT THE TEST"~0,
+                             x=="yes"~1,
+                             x=="no"~0, 
+x=="Yes and observed."~1,
+x=="NA"~8,
+x=="t_na"~8,
+
+                             is.na(x)~8)
+}
+
+
+
+```
+
+
+
+
+
+
+
+```{r}
+# Initialize a list to store the plots
+output_plots <- list()
+num_rows <- nrow(indicators_2)
+
+# Loop through each row in the `indicators` dataframe
+for (row_number in 1:num_rows) {
+  # Step 1: Extract relevant variables for the current row
+  test_row <- indicators_2[row_number, ]
+  variables <- test_row[relevant_vars] %>%
+    unlist() %>%
+    na.omit() %>%
+    as.character()
+  
+  # Step 2: Filter variables to ensure they exist in `df_2`
+  variables <- variables[variables %in% names(df_2)]
+  
+  if (length(variables) == 0) {
+    warning(paste("No valid variables found for row", row_number))
+    next
+  }
+  
+  # Step 3: Generate Composite Variables
+  # Start with Composite_1
+  df_2 <- df_2 %>%
+    mutate(Composite_1 = ifelse(value_fun(.data[[variables[1]]]) == 1, "Yes", "No"))
+  
+  # Generate additional composite variables progressively
+  composite_names <- c(variables[1])  # Keep track of composite names
+  for (i in 2:length(variables)) {
+    composite_vars <- variables[1:i]  # Select the first `i` variables
+    composite_col <- paste0("Composite_", i)
+    composite_names <- c(composite_names, paste("+", variables[i]))  # Add to cumulative name list
+    
+    # Validate that all columns in `composite_vars` exist in `df_2`
+    if (!all(composite_vars %in% names(df_2))) {
+      warning(paste("Invalid composite variables for row", row_number, ":", paste(composite_vars, collapse = ", ")))
+      next
+    }
+    
+    # Generate the composite variable
+    df_2 <- df_2 %>%
+      mutate(!!composite_col := ifelse(
+        rowSums(across(all_of(composite_vars), ~ value_fun(.x), .names = "valid_{col}")) == i,
+        "Yes",
+        "No"
+      ))
+  }
+  
+  # Step 4: Calculate Percentages for Composite Variables
+  composites <- paste0("Composite_", 1:length(variables))
+  
+  # Filter only composites that exist in the dataframe
+  valid_composites <- composites[composites %in% names(df_2)]
+  
+  if (length(valid_composites) == 0) {
+    warning(paste("No valid composites found for row", row_number))
+    next
+  }
+  
+  # Create a dataframe for plotting
+  data_for_plot <- data.frame(
+    Variable = composite_names[1:length(valid_composites)],  # Use cumulative names
+    Percentage = sapply(valid_composites, function(comp) {
+      composite_counts <- df_2 %>%
+        count(!!sym(comp)) %>%
+        #mutate(Percentage = n / nrow(df_2) * 100)  # Use nrow(df_2) to match denominator logic
+        mutate(Percentage = n / sum(complete.cases(df_2)) * 100)
+      yes_percentage <- composite_counts %>%
+        filter(!!sym(comp) == "Yes") %>%
+        pull(Percentage)
+      if (length(yes_percentage) == 0) return(0) else return(yes_percentage)
+    })
+  )
+  
+  # Step 5: Generate the plot
+ 
+  intervention_name <- test_row$L2  # Assuming INTERVENTION column exists
+p <- ggplot(data_for_plot, aes(x = reorder(Variable, -Percentage), y = Percentage, fill = Percentage)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  scale_fill_gradient(low = "#b0c4de", high = "#4682b4") +
+  labs(
+    title = paste("Readiness Elements -", intervention_name),
+    x = "Readiness elements",
+    y = "Percentage (%)"
+  ) +
+  ylim(0, 100) +
+  theme_bw() +
+  theme(legend.position = "none") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x-axis labels for readability
+
+  # Save the plot
+  output_plots[[row_number]] <- p
+  print(paste("Plot created for row", row_number))
+}
+
+# Step 6: Save or display the plots
+for (i in seq_along(output_plots)) {
+  if (!is.null(output_plots[[i]])) {
+    print(output_plots[[i]])
+  }
+}
+
+```
+
+
+
+```{r}
+# Specify the directory to save the plots
+output_directory <- "output_graphs"
+if (!dir.exists(output_directory)) {
+  dir.create(output_directory)
+}
+
+# Loop through each row in the `indicators` dataframe
+for (row_number in 1:num_rows) {
+  # ... (existing code for generating plots)
+  
+  # Save the plot
+  if (!is.null(output_plots[[row_number]])) {
+    plot_file <- file.path(output_directory, paste0("plot_row_", row_number, ".png"))
+    ggsave(plot_file, plot = output_plots[[row_number]], width = 10, height = 6)
+    print(paste("Plot saved for row", row_number, "at", plot_file))
+  }
+}
+
+```
+
+
+
+
+
+```{r}
+# Load the grid package for grid.newpage and grid.text
+
+
+# Create the output directory if it doesn't exist
+if (!dir.exists("output_graphs")) {
+  dir.create("output_graphs")
+}
+
+# Define the PDF output file
+output_pdf <- "output_graphs/DH_PHC.pdf"  # Change the filename to all_PHC.pdf
+
+# Open a PDF device
+pdf(output_pdf, width = 10, height = 6)
+
+# Add a title page
+grid.newpage()  # Create a new blank page
+grid.text(
+  "Readiness Cascades_DH++",
+  gp = gpar(fontsize = 24, fontface = "bold"),
+  x = 0.5, y = 0.5
+)
+
+# Loop through the plots and add each one to the PDF
+for (i in seq_along(output_plots)) {
+  if (!is.null(output_plots[[i]])) {
+    print(output_plots[[i]])
+  }
+}
+
+# Close the PDF device
+dev.off()
+
+# Confirm process completion
+cat("All plots with a title page have been saved to", output_pdf, "\n")
+
+```
+
+
+```{r}
+
+
+# Load the pdftools package
+library(pdftools)
+
+# Define the PDF files to merge
+pdf_files <- c(
+  "output_graphs/all_PHC.pdf", 
+  "output_graphs/RCH_PHC.pdf", 
+  "output_graphs/DH_PHC.pdf"
+)
+
+# Define the output file for the merged PDF
+merged_pdf <- "output_graphs/merged_Readiness_Cascades.pdf"
+
+# Merge the PDF files
+pdf_combine(pdf_files, output = merged_pdf)
+
+# Confirm process completion
+cat("The PDFs have been merged into", merged_pdf, "\n")
+
+
+```
+
+
+
+
+
+
+
+```{r}
+library(gridExtra)
+# Extract plots for specific rows
+plots_to_display <- list(
+  output_plots[[7]],
+  output_plots[[10]],
+  output_plots[[53]],
+  output_plots[[50]],
+  output_plots[[47]],
+  output_plots[[42]]
+  
+)
+
+
+plot_indices <- c(7, 10, 53, 50, 47, 42)
+
+
+```
+
+
+```{r}
+
+
+
+# Extract the selected plots
+plots_to_display <- output_plots[plot_indices]
+
+
+# Arrange the updated plots in a grid and display
+grid.arrange(
+  grobs = plots_to_display,
+  nrow = 3,  # Number of rows
+  ncol = 2   # Number of columns
+)
+
+# Save the updated plots to a PDF
+pdf("updated_plots.pdf", width = 15, height = 10)
+grid.arrange(
+  grobs = plots_to_display,
+  nrow = 3,
+  ncol = 2
+)
+dev.off()
+
+```
+
+#old order
+```{r eval=FALSE, include=FALSE}
+
+plots_to_display[[4]] <- plots_to_display[[4]] +
+  labs(title = "Family Planning")
+# Update x-axis labels for each plot
+plots_to_display[[1]] <- plots_to_display[[1]] +
+  scale_x_discrete(
+    labels = c("ART", "+Testing", "+Prescribe ART", "+Trained\nHR", "+Privacy", "+Infrastructure")
+  )
+
+plots_to_display[[2]] <- plots_to_display[[2]] +
+  scale_x_discrete(
+    labels = c("TB Treatment", "+Trained\nHR", "+Privacy", "+Diagnosis", "+Infrastructure")
+  )
+
+plots_to_display[[3]] <- plots_to_display[[3]] +
+  scale_x_discrete(
+    labels = c("Oxy\ntocin", "+Mg\nSO4", "+BPA", "+Stetho\nscope","+Scissor","+Suction", "+beds",
+               "+Trained\nHR","+Infra\nstructure")
+  )
+
+plots_to_display[[4]] <- plots_to_display[[4]] +
+  scale_x_discrete(
+    labels = c("2 methods", "+BPA", "+Stetho\nscope","+Privacy", "+Infra\nstructure")
+  )
+
+plots_to_display[[5]] <- plots_to_display[[5]] +
+  scale_x_discrete(
+    labels = c("Insulin\nmetformin", "+Weighing scale", "+BPA", "+Stetho\nscope", "+Dipstick\nor Glucometer", "+Infra\nstructure")
+  )
+
+plots_to_display[[6]] <- plots_to_display[[6]] +
+  scale_x_discrete(
+    labels = c("Beclo\nmethasone", "+Sal\nbutamol", "+Stetho\nscope","+Diagnostics", "+Infra\nstructure")
+  )
+
+```
+
+#new order without spliting
+```{r}
+
+plots_to_display[[4]] <- plots_to_display[[4]] +
+  labs(title = "Family Planning")
+plots_to_display[[6]] <- plots_to_display[[6]] +
+  labs(title = "Longitudinal management of asthma")
+plots_to_display[[5]] <- plots_to_display[[5]] +
+  labs(title = "Longitudinal management DM_2")
+
+
+
+# Update x-axis labels for each plot
+plots_to_display[[1]] <- plots_to_display[[1]] +
+  scale_x_discrete(
+    labels = c("Infrastructure","+Testing","+ART","+Prescribe ART", "+Trained HR", "+Privacy" )
+  )
+
+plots_to_display[[2]] <- plots_to_display[[2]] +
+  scale_x_discrete(
+    labels = c("Infrastructure", "+Diagnosis" ,"+TB Treatment", "+Trained HR", "+Privacy" )
+  )
+
+plots_to_display[[3]] <- plots_to_display[[3]] +
+  scale_x_discrete(
+    labels = c("Infranstructure","+BPA","+Stethoscope","+Scissor","+Suction","+Oxytocin", "+MgSO4", "+beds", "+Trained HR")
+  )
+
+plots_to_display[[4]] <- plots_to_display[[4]] +
+  scale_x_discrete(
+    labels = c("Infrastructure", "+BPA", "+Stethoscope","+2 methods","+Privacy")
+  )
+
+plots_to_display[[5]] <- plots_to_display[[5]] +
+  scale_x_discrete(
+    labels = c("Infrastructure", "+Weighing scale", "+BPA", "+Stethoscope", "+Dipstick or Glucometer","+Insulin or metformin" )
+  )
+
+plots_to_display[[6]] <- plots_to_display[[6]] +
+  scale_x_discrete(
+    labels = c("Infrastructure","+Stethoscope","+Diagnostics", "+Beclomethasone", "+Salbutamol")
+  )
+
+```
+
+
+```{r}
+
+plots_to_display[[4]] <- plots_to_display[[4]] +
+  labs(title = "Family Planning")
+# Update x-axis labels for each plot
+plots_to_display[[1]] <- plots_to_display[[1]] +
+  scale_x_discrete(
+    labels = c("Infra","+Testing","+ART","+Prescribe\n ART", "+Trained\nHR", "+Privacy" )
+  )
+
+plots_to_display[[2]] <- plots_to_display[[2]] +
+  scale_x_discrete(
+    labels = c("Infra", "+Diagnosis" ,"+TB\nTreatment", "+Trained\nHR", "+Privacy" )
+  )
+
+plots_to_display[[3]] <- plots_to_display[[3]] +
+  scale_x_discrete(
+    labels = c("Infra","+BPA","+Stetho","+Sci\nssors","+SA","+Oxy\ntocin", "+Mg\nSO4", "+beds", "+T-HR")
+  )
+
+plots_to_display[[4]] <- plots_to_display[[4]] +
+  scale_x_discrete(
+    labels = c("Infra", "+BPA", "+Stetho","+2 methods","+Privacy")
+  )
+
+plots_to_display[[5]] <- plots_to_display[[5]] +
+  scale_x_discrete(
+    labels = c("Infra", "+WS", "+BPA", "+Stetho", "+Dipstick\n /Glucometer","Insulin\n /metformin" )
+  )
+
+plots_to_display[[6]] <- plots_to_display[[6]] +
+  scale_x_discrete(
+    labels = c("Infra","+Stetho","+Diagnostics", "+Beclo\nmethasone", "+Sal\nbutamol" )
+  )
+
+```
+
+
+```{r}
+
+
+
+
+grid.arrange(
+  grobs = plots_to_display,  # List of plots to display
+  nrow = 3,                 # Number of rows
+  ncol = 2                  # Number of columns
+)
+
+
+pdf("selected_plots.pdf", width = 15, height = 10)  # Adjust size as needed
+grid.arrange(
+  grobs = plots_to_display,  # List of plots to display
+  nrow = 3,                 # Number of rows
+  ncol = 2                 # Number of columns
+)
+dev.off()
+
+
+```
+
+
+
+
+```{r}
+
+#do not run
+
+# Function to wrap labels
+wrap_labels <- function(labels, width = 15) {
+  str_wrap(labels, width = width)
+}
+
+# Update plots with wrapped labels, reduced font size, and adjusted margins
+plots_to_display <- lapply(plots_to_display, function(plot) {
+  category_labels <- ggplot_build(plot)$layout$panel_params[[1]]$x$get_labels()
+  wrapped_labels <- wrap_labels(category_labels, width = 10)
+  
+  plot + 
+    scale_x_discrete(labels = wrapped_labels) + 
+    theme(
+      axis.text.x = element_text(size = 8, angle = 45, hjust = 1),  # Smaller text size, rotated
+      plot.margin = margin(10, 10, 10, 10)  # Add space
+    )
+})
+
+pdf("updated_plots.pdf", width = 25, height = 12)  # Wider and taller PDF
+grid.arrange(
+  grobs = plots_to_display,
+  nrow = 3,
+  ncol = 2,
+ 
+)
+dev.off()
+
+
+tiff("updated_plots.tiff", width = 25, height = 12, units = "in", res = 300)  # Wider and taller TIFF
+grid.arrange(
+  grobs = plots_to_display,
+  nrow = 3,
+  ncol = 2,
+  
+)
+dev.off()  # Close the TIFF device
+
+
+```
+
+
+```{r}
+# Update x-axis labels to be horizontal for all plots
+plots_to_display <- lapply(plots_to_display, function(plot) {
+  plot +
+    theme(
+      axis.text.x = element_text(angle = 0, hjust = 0.5, vjust = 0.5, size = 12),  # Increased font size
+      axis.text.y = element_text(size = 12)  # Optionally increase y-axis font size too
+    )
+})
+
+# Save the updated plots to a TIFF file
+tiff("updated_horizontal_labels.tiff", width = 25, height = 12, units = "in", res = 300)
+grid.arrange(
+  grobs = plots_to_display,
+  nrow = 3,  # Adjust number of rows
+  ncol = 2   # Adjust number of columns
+)
+dev.off()
+
+
+pdf("updated_horizontal_labels.pdf", width = 12, height = 17)  # Wider and taller PDF
+grid.arrange(
+  grobs = plots_to_display,
+  nrow = 3,
+  ncol = 2,
+ 
+)
+dev.off()
+
+```
+
